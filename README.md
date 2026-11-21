@@ -14,7 +14,7 @@ An external tachometer and gear advisor for the PS2 recompilation of Need for Sp
 
 The advisor reads the local player's nine-point engine torque curve, forward gear ratios, throttle and clutch state through a read-only Windows handle. It compares full-throttle wheel force at the same road speed in every usable gear. Estimates assume an engaged clutch. Wheelspin or a change of speed during a shift can affect the actual landing RPM.
 
-Version 1.3.0 confirms downshifts after 60 ms when the lower gear offers at least 4% more force with at least 25% throttle. With steadily rising RPM, the upshift light can lead the crossover by up to 120 ms and 180 RPM if the next gear already offers at least 98.5% of the current wheel force. The lights clear during shifts, pauses and replays.
+The advisor confirms downshifts after 60 ms when the lower gear offers at least 4% more force with at least 25% throttle. At 35% throttle or more, steady RPM rise can show an amber preparation cue up to 120 ms and 180 RPM before the target. The panel flashes red once the upshift target is reached and the higher gear provides at least the current wheel force. Where the lower gear stays stronger throughout its rev range, the target is fuel cut. The percentage is the estimated full-throttle power after shifting now, relative to the engine’s peak. The lights clear during shifts, pauses and replays.
 
 ## Build
 

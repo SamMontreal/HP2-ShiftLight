@@ -110,7 +110,7 @@ namespace HP2ShiftLight
             bool changed=next.Advice!=current.Advice || next.Car!=current.Car || next.Gear!=current.Gear;
             if (changed) flashClock.Restart();
             bool bright=next.Advice!=ShiftAdvice.None && flashClock.ElapsedMilliseconds%500<250;
-            bool redraw=changed || bright!=brightPhase || next.Status!=current.Status ||
+            bool redraw=changed || bright!=brightPhase || next.Status!=current.Status || next.PreparingUp!=current.PreparingUp ||
                 Math.Round(next.Rpm)!=Math.Round(current.Rpm) || next.Top!=current.Top || next.Target!=current.Target ||
                 next.NextRpm!=current.NextRpm || next.NextPower!=current.NextPower || next.NextGear!=current.NextGear ||
                 next.Suggested!=current.Suggested || next.SuggestedRpm!=current.SuggestedRpm || next.ForceGain!=current.ForceGain;
@@ -186,8 +186,8 @@ namespace HP2ShiftLight
 
             string status=up?"↑ 升挡":down?"↓ 降挡":current.Status;
             if (!alert && current.Driving && status == null)
-                status=current.Suggested>0 && current.Suggested<current.Gear?"再加速":current.Gear==current.Top?"最高挡":current.Target>0 && current.Rpm>=current.Target*.965?"准备升挡":"行驶中";
-            TextAt(g,status,label,ink,244,17);
+                status=current.Suggested>0 && current.Suggested<current.Gear?"再加速":current.Gear==current.Top?"最高挡":current.PreparingUp?"准备升挡":"行驶中";
+            TextAt(g,status,label,current.PreparingUp?Amber:ink,244,17);
             if (current.Target>0)
                 TextAt(g,"升挡目标 "+Math.Round(current.Target).ToString("0"),label,secondary,244,42);
             bool other=current.Suggested>0 && current.Suggested!=current.Gear;
@@ -200,7 +200,7 @@ namespace HP2ShiftLight
                 if (other && current.Suggested<current.Gear)
                     TextAt(g,double.IsInfinity(current.ForceGain)?"恢复驱动力":current.ForceGain>=9?"驱动力 ≥10倍":
                         "驱动力 +"+(100*current.ForceGain).ToString("0")+"%",label,secondary,352,42);
-                else if (current.NextPower>0) TextAt(g,"峰值功率 "+(100*current.NextPower).ToString("0")+"%",label,secondary,352,42);
+                else if (current.NextPower>0) TextAt(g,"换后功率 "+(100*current.NextPower).ToString("0")+"%",label,secondary,352,42);
             }
             double fraction=current.Driving?Math.Max(0,Math.Min(1,current.Rpm/(current.Target>0?current.Target:current.Limit))):0;
             for (int i=0;i<18;i++)

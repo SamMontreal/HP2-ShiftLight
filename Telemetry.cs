@@ -16,6 +16,7 @@ namespace HP2ShiftLight
         public float Rpm;
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
+        public bool PreparingUp;
         public bool Driving { get { return Car != 0; } }
     }
 
@@ -148,7 +149,7 @@ namespace HP2ShiftLight
         {
             // Both wheel-force curves are linear between their combined breakpoints.
             // Walk back from fuel cut to find the start of the sustained next-gear advantage.
-            double last=Math.Ceiling(Limit-100)-1;
+            double last=Limit-100;
             double first=idle/ratio;
             if (first>last || Gain(last,ratio)<0) return last;
             double[] marks=new double[20];
@@ -236,11 +237,10 @@ namespace HP2ShiftLight
             bool upAvailable = row.Target > 0 && row.NextGear > gear && row.NextPower > 0 && row.Suggested >= gear;
             if (upAvailable)
             {
-                bool crossed = row.Rpm >= row.Target || (row.Suggested > gear && row.ForceGain >= DownGain);
-                bool close = row.NextPower >= .985 * row.CurrentPower && row.Rpm + lead >= row.Target;
-                bool holding = advice == ShiftAdvice.Up && row.Rpm >= row.Target - 45 &&
-                               row.NextPower >= .995 * row.CurrentPower;
-                if (crossed || close || holding)
+                row.PreparingUp = row.Rpm < row.Target && row.Rpm + lead >= row.Target;
+                // A predictive cue is useful to the driver, but acting on red must
+                // already deliver at least the available drive force in this gear.
+                if (row.Rpm >= row.Target && row.NextPower >= row.CurrentPower)
                 {
                     row.Suggested = row.NextGear;
                     row.SuggestedRpm = row.NextRpm;
