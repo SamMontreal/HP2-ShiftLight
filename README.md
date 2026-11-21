@@ -4,7 +4,7 @@ An external tachometer and gear advisor for the PS2 recompilation of Need for Sp
 
 [Download for Windows](https://github.com/SamMontreal/HP2-ShiftLight/releases/latest) · [中文使用说明](README.zh-CN.txt)
 
-The 1.5.0 driving panel adds road speed in km/h and a two-axis G meter beside engine RPM and gear advice. The marker moves right under rightward acceleration and up under forward acceleration. Braking moves it down. Each ring is 1 g. The signed numbers show horizontal vehicle acceleration even beyond the outer ring. The gauge projects the game’s world acceleration onto the current vehicle heading and smooths it over 90 ms of simulation time.
+The 1.5.1 driving panel adds road speed in km/h and a two-axis G meter beside engine RPM and gear advice. The marker and signed values show the inertial load felt by the driver. Acceleration moves the marker down, braking moves it up, a left turn moves it right, and a right turn moves it left. Each ring is 1 g. The signed numbers show the driver’s horizontal inertial load even beyond the outer ring. The gauge projects the game’s world acceleration onto the current vehicle axes, reverses the sign and smooths it over 90 ms of simulation time.
 
 ## Install and play
 

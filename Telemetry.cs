@@ -330,7 +330,7 @@ namespace HP2ShiftLight
         }
     }
 
-    // Horizontal acceleration in the vehicle's heading frame, positive right and forward.
+    // Horizontal inertial load felt by the driver, positive right and forward.
     internal sealed class PlanarLoad
     {
         private int vehicle;
@@ -343,7 +343,7 @@ namespace HP2ShiftLight
             if (double.IsNaN(seconds) || double.IsInfinity(seconds) || float.IsNaN(ax) || float.IsNaN(ay) ||
                 float.IsInfinity(ax) || float.IsInfinity(ay)) { Reset(); return; }
             double angle=yaw*(2*Math.PI/65536), c=Math.Cos(angle), s=Math.Sin(angle);
-            double x=(ax*s-ay*c)/9.80665, y=(ax*c+ay*s)/9.80665;
+            double x=(ay*c-ax*s)/9.80665, y=-(ax*c+ay*s)/9.80665;
             double dt=seconds-time;
             double blend=vehicle==car && dt>=0 && dt<.3 ? 1-Math.Exp(-dt/.09) : 1;
             right+=(x-right)*blend;
