@@ -2,7 +2,7 @@
 
 An external tachometer and gear advisor for the PS2 recompilation of Need for Speed: Hot Pursuit 2 on Windows x64. Supports the stock 0.14 runtime and the Timelapse Clouds runtime. The overlay shows RPM, current gear, recommended gear and the estimated RPM after the shift.
 
-[Download for Windows](https://github.com/SamMontreal/HP2-ShiftLight/releases/latest) · [中文使用说明](README.zh-CN.txt)
+[Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.6.0/HP2-ShiftLight-v1.6.0-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
 
 The 1.6.0 main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both use translucent charcoal, silver framing and amber highlights drawn from the original race HUD. Both close when their game exits. The speed and RPM displays are live. The G marker and readings average the driver's lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time.
 
