@@ -14,6 +14,8 @@ namespace HP2ShiftLight
         public string Status;
         public int Car, Gear, Top, Suggested, NextGear;
         public float Rpm;
+        public double SpeedKmh, LateralG, LongitudinalG;
+        public bool HasG;
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
         public bool PreparingUp;
@@ -328,6 +330,29 @@ namespace HP2ShiftLight
         }
     }
 
+    // Horizontal acceleration in the vehicle's heading frame, positive right and forward.
+    internal sealed class PlanarLoad
+    {
+        private int vehicle;
+        private double time, right, forward;
+
+        public void Reset() { vehicle=0; }
+
+        public void Apply(ref Reading row,int car,double seconds,int yaw,float ax,float ay)
+        {
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds) || float.IsNaN(ax) || float.IsNaN(ay) ||
+                float.IsInfinity(ax) || float.IsInfinity(ay)) { Reset(); return; }
+            double angle=yaw*(2*Math.PI/65536), c=Math.Cos(angle), s=Math.Sin(angle);
+            double x=(ax*s-ay*c)/9.80665, y=(ax*c+ay*s)/9.80665;
+            double dt=seconds-time;
+            double blend=vehicle==car && dt>=0 && dt<.3 ? 1-Math.Exp(-dt/.09) : 1;
+            right+=(x-right)*blend;
+            forward+=(y-forward)*blend;
+            vehicle=car; time=seconds;
+            row.HasG=true; row.LateralG=right; row.LongitudinalG=forward;
+        }
+    }
+
     internal sealed class Telemetry : IDisposable
     {
         [DllImport("kernel32", SetLastError=true)]
@@ -336,6 +361,8 @@ namespace HP2ShiftLight
         private static extern bool ReadProcessMemory(SafeProcessHandle handle, IntPtr address, [Out] byte[] data, UIntPtr bytes, out UIntPtr count);
         private readonly string gameDir;
         private readonly Stopwatch clock = Stopwatch.StartNew();
+        private readonly PlanarLoad load = new PlanarLoad();
+        private readonly byte[] acceleration = new byte[8];
         private readonly ShiftLanding landing = new ShiftLanding();
         private readonly ShiftState shift = new ShiftState();
         private readonly GearModel model = new GearModel();
@@ -355,6 +382,7 @@ namespace HP2ShiftLight
         {
             shift.Reset();
             landing.Reset();
+            load.Reset();
             lastCar = 0;
             return new Reading { Status = why };
         }
@@ -389,7 +417,9 @@ namespace HP2ShiftLight
                 Read(ei, info);
                 if (top < 1 || top > 8) return Idle("动力曲线不可用");
                 Read(car+960, motion);
-                bool moving=BitConverter.ToSingle(motion,0)>1.0f;
+                float roadSpeed=BitConverter.ToSingle(motion,0);
+                if (float.IsNaN(roadSpeed) || float.IsInfinity(roadSpeed)) return Idle("等待车速");
+                bool moving=roadSpeed>1.0f;
                 int gear = BitConverter.ToInt32(motion,8)-1;   // retail Gear enum: reverse, neutral, 1st …
                 float throttle = BitConverter.ToSingle(motion,12), rpm = BitConverter.ToSingle(motion,16);
                 if (gear < -1 || gear > top || !(rpm >= 0 && rpm < 24000) || Int(p+4) != car || Int(0x330728) != p) return Idle("等待车辆数据");
@@ -401,6 +431,7 @@ namespace HP2ShiftLight
                 {
                     shift.Reset();
                     landing.Reset();
+                    load.Reset();
                     return new Reading { Status = "等待比赛继续" };
                 }
                 if (!fresh) return lastReading;
@@ -424,6 +455,14 @@ namespace HP2ShiftLight
                 double downScale=landing.Scale(true,out upper);
                 Reading row=model.AtSpeed(rpm,moving,upScale,upper,downScale);
                 shift.Apply(model, ref row, moving ? throttle : 0, changingGear, now);
+                row.SpeedKmh=Math.Abs((double)roadSpeed)*3.6;
+                // GetForwardAcceleration uses the world acceleration at Car+0x80.
+                // CarState::GetYawAlways reads the 16-bit heading at CarState+0x364.
+                Read(car+0x80,acceleration);
+                int heading=Int(car+0x3a4)&0xffff;
+                if (Int(p+4)!=car || Int(0x330728)!=p) return Idle("等待玩家车辆");
+                float seconds=BitConverter.ToSingle(BitConverter.GetBytes(tick),0);
+                load.Apply(ref row,car,seconds,heading,BitConverter.ToSingle(acceleration,0),BitConverter.ToSingle(acceleration,4));
                 lastReading = row;
                 return row;
             }
