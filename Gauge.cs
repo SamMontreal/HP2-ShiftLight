@@ -8,8 +8,8 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("HP2 ShiftLight")]
-[assembly: System.Reflection.AssemblyVersion("1.5.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
 
 namespace HP2ShiftLight
 {
@@ -37,22 +37,24 @@ namespace HP2ShiftLight
             public Rect Screen, Work;
             public uint Flags;
         }
-        private static readonly Color Surface=Color.FromArgb(22,26,30), Muted=Color.FromArgb(165,178,187),
-            Bright=Color.FromArgb(245,246,238), Mint=Color.FromArgb(103,216,175), Amber=Color.FromArgb(255,194,80);
+        private static readonly Color Surface=HudTheme.Base, Muted=HudTheme.Silver,
+            Bright=HudTheme.White, Amber=HudTheme.Orange;
         private const int PanelWidth=620, PanelHeight=108;
         private static readonly Color UpLit=Color.FromArgb(192,40,50), UpDim=Color.FromArgb(80,24,31),
             DownLit=Color.FromArgb(12,135,73), DownDim=Color.FromArgb(13,60,42);
         private readonly Stopwatch flashClock=new Stopwatch();
         private bool brightPhase;
         private readonly Font label=new Font("Microsoft YaHei UI",13,FontStyle.Bold,GraphicsUnit.Pixel);
-        private readonly Font speedDigits=new Font("Bahnschrift",44,FontStyle.Bold,GraphicsUnit.Pixel);
+        private readonly Font speedDigits=new Font("Bahnschrift",44,FontStyle.Bold|FontStyle.Italic,GraphicsUnit.Pixel);
         private readonly Font small=new Font("Microsoft YaHei UI",11,FontStyle.Regular,GraphicsUnit.Pixel);
         private readonly Font digits=new Font("Bahnschrift",33,FontStyle.Bold,GraphicsUnit.Pixel);
         private readonly Font gearFont=new Font("Bahnschrift",23,FontStyle.Bold,GraphicsUnit.Pixel);
         private readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
         private readonly Telemetry telemetry;
+        private readonly PursuitPanel pursuit=new PursuitPanel();
         private readonly Stopwatch displayCheck=Stopwatch.StartNew();
-        private Rectangle lastAnchor;
+        private Rectangle lastAnchor, gameArea;
+        private bool reserveSide;
         private float zoom=1f;
         private Reading current;
         private static readonly Rectangle CloseBox=new Rectangle(PanelWidth-26,3,22,23);
@@ -70,17 +72,26 @@ namespace HP2ShiftLight
         }
 
         // Win32 returns physical desktop coordinates, including negative origins on secondary monitors.
-        internal static Rectangle BottomCenter(Rectangle screen, Rectangle work, Rectangle game, uint dpi, out float scale)
+        private static Rectangle PlayArea(Rectangle screen,Rectangle work,Rectangle game)
         {
             bool fullscreen=!game.IsEmpty && game.Left<=screen.Left+2 && game.Top<=screen.Top+2 &&
                 game.Right>=screen.Right-2 && game.Bottom>=screen.Bottom-2;
             Rectangle area=fullscreen || work.IsEmpty ? screen : work;
+            if (!fullscreen && !game.IsEmpty) {
+                var viewport=Rectangle.Intersect(area,game);
+                if (viewport.Width>0 && viewport.Height>0) area=viewport;
+            }
+            return area;
+        }
+
+        internal static Rectangle BottomCenter(Rectangle screen, Rectangle work, Rectangle game, uint dpi, out float scale, bool withPursuit=false)
+        {
+            Rectangle area=PlayArea(screen,work,game);
             scale=Math.Max(dpi/96f,Math.Min(2f,Math.Max(1f,screen.Width/2400f)));
-            scale=Math.Min(scale,Math.Min(area.Width/(float)PanelWidth,area.Height/(float)(PanelHeight+16)));
+            int requiredWidth=PanelWidth+(withPursuit?2*(PursuitPanel.DesignWidth+PursuitPanel.Gap+2):0);
+            scale=Math.Min(scale,Math.Min(area.Width/(float)requiredWidth,area.Height/(float)(PanelHeight+16)));
             int width=(int)Math.Ceiling(PanelWidth*scale), height=(int)Math.Ceiling(PanelHeight*scale);
-            int x=screen.Left+(screen.Width-width)/2;
-            x=Math.Max(area.Left,Math.Min(x,area.Right-width));
-            return new Rectangle(x,area.Bottom-height-(int)Math.Round(16*scale),width,height);
+            return new Rectangle(area.Left+(area.Width-width)/2,area.Bottom-height-(int)Math.Round(16*scale),width,height);
         }
 
         private void PlaceOnGameScreen()
@@ -96,7 +107,8 @@ namespace HP2ShiftLight
             Rect gameRect;
             Rectangle gameBounds=game!=IntPtr.Zero && GetWindowRect(game,out gameRect) ? gameRect.Bounds : Rectangle.Empty;
             float newZoom;
-            Rectangle anchor=BottomCenter(info.Screen.Bounds,info.Work.Bounds,gameBounds,dpi,out newZoom);
+            gameArea=PlayArea(info.Screen.Bounds,info.Work.Bounds,gameBounds);
+            Rectangle anchor=BottomCenter(info.Screen.Bounds,info.Work.Bounds,gameBounds,dpi,out newZoom,reserveSide);
             if (anchor!=lastAnchor || zoom!=newZoom)
             {
                 lastAnchor=anchor; zoom=newZoom; Bounds=anchor; Invalidate();
@@ -107,8 +119,13 @@ namespace HP2ShiftLight
         private void UpdateGauge(object sender, EventArgs e)
         {
             Reading next=telemetry.Poll();
-            if (displayCheck.ElapsedMilliseconds>=600) PlaceOnGameScreen();
+            if (telemetry.GameEnded) { Close(); return; }
+            if (displayCheck.ElapsedMilliseconds>=600 || reserveSide!=next.Air.Visible) {
+                reserveSide=next.Air.Visible;
+                PlaceOnGameScreen();
+            }
             DisplayReading(next);
+            pursuit.UpdateFor(this,next.Air,zoom,gameArea);
         }
 
         internal void DisplayReading(Reading next)
@@ -127,23 +144,12 @@ namespace HP2ShiftLight
             if (redraw) Invalidate();
         }
 
-        private static GraphicsPath PanelShape(float x,float y,float width,float height,float radius)
-        {
-            float d=2*radius;
-            GraphicsPath path=new GraphicsPath();
-            path.AddArc(x,y,d,d,180,90);
-            path.AddArc(x+width-d,y,d,d,270,90);
-            path.AddArc(x+width-d,y+height-d,d,d,0,90);
-            path.AddArc(x,y+height-d,d,d,90,90);
-            path.CloseFigure();
-            return path;
-        }
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
             if (ClientSize.Width<8 || ClientSize.Height<8) return;
             Region old=Region;
-            using (GraphicsPath path=PanelShape(0,0,ClientSize.Width,ClientSize.Height,9*zoom))
+            using (GraphicsPath path=HudTheme.Outline(0,0,ClientSize.Width,ClientSize.Height,8*zoom))
                 Region=new Region(path);
             if (old!=null) old.Dispose();
         }
@@ -175,7 +181,7 @@ namespace HP2ShiftLight
         private void DrawLoad(Graphics g, Color ink, Color secondary)
         {
             const int cx=471,cy=53,r=33;
-            using (Pen grid=new Pen(Color.FromArgb(95,121,130),1))
+            using (Pen grid=new Pen(Color.FromArgb(153,149,144),1))
             {
                 g.DrawEllipse(grid,cx-r,cy-r,2*r,2*r);
                 g.DrawEllipse(grid,cx-r/2f,cy-r/2f,r,r);
@@ -188,14 +194,15 @@ namespace HP2ShiftLight
                 double length=Math.Sqrt(current.LateralG*current.LateralG+current.LongitudinalG*current.LongitudinalG);
                 float scale=(float)(r/Math.Max(2,length));
                 float dx=(float)current.LateralG*scale, dy=(float)-current.LongitudinalG*scale;
-                using (Pen stem=new Pen(Mint,2)) g.DrawLine(stem,cx,cy,cx+dx,cy+dy);
-                using (Brush dot=new SolidBrush(Mint)) g.FillEllipse(dot,cx+dx-3.5f,cy+dy-3.5f,7,7);
+                using (Pen stem=new Pen(Amber,2)) g.DrawLine(stem,cx,cy,cx+dx,cy+dy);
+                using (Brush dot=new SolidBrush(Amber)) g.FillEllipse(dot,cx+dx-3.5f,cy+dy-3.5f,7,7);
             }
-            TextAt(g,"G 力",label,ink,518,12);
+            TextAt(g,"平均 G",label,ink,518,12);
             string x=current.HasG?SignedG(current.LateralG):"—", y=current.HasG?SignedG(current.LongitudinalG):"—";
             TextAt(g,"横向",small,secondary,518,39); TextAt(g,x,label,ink,551,36);
             TextAt(g,"纵向",small,secondary,518,62); TextAt(g,y,label,ink,551,59);
             TextAt(g,"每圈 1 g",small,secondary,449,87);
+            TextAt(g,"最近 0.5 秒",small,secondary,518,87);
         }
         private static string SignedG(double v)
         {
@@ -207,14 +214,13 @@ namespace HP2ShiftLight
             Graphics g=e.Graphics;
             bool up=current.Advice==ShiftAdvice.Up, down=current.Advice==ShiftAdvice.Down;
             bool alert=up || down;
-            Color accent=up?Color.FromArgb(255,100,100):down?Color.FromArgb(93,242,153):current.PreparingUp?Amber:Mint;
+            Color accent=up?Color.FromArgb(255,100,100):down?Color.FromArgb(93,242,153):current.PreparingUp?Amber:Amber;
             Color shade=up?(brightPhase?UpLit:UpDim):down?(brightPhase?DownLit:DownDim):Surface;
             Color secondary=alert?Color.FromArgb(232,239,234):Muted;
             g.Clear(shade); g.ScaleTransform(zoom,zoom); g.SmoothingMode=SmoothingMode.AntiAlias;
             g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            using (GraphicsPath outline=PanelShape(1,1,PanelWidth-2,PanelHeight-2,9))
-            using (Pen edge=new Pen(alert?accent:Color.FromArgb(78,101,109),1)) g.DrawPath(edge,outline);
-            using (Pen line=new Pen(Color.FromArgb(88,108,114),1))
+            HudTheme.Frame(g,PanelWidth,PanelHeight,shade,accent);
+            using (Pen line=new Pen(Color.FromArgb(106,104,100),1))
             {
                 foreach (int x in new int[]{119,275,425}) g.DrawLine(line,x,12,x,PanelHeight-12);
             }
@@ -228,7 +234,7 @@ namespace HP2ShiftLight
             double limit=current.Target>0?current.Target:current.Limit;
             double fraction=live && limit>0?Math.Min(1,current.Rpm/limit):0;
             for (int i=0;i<16;i++)
-                Box(g,fraction>=(i+1)/16.0?(i>=13?Amber:accent):Color.FromArgb(63,78,83),133+i*8,72,6,5);
+                Box(g,fraction>=(i+1)/16.0?(i>=13?Color.FromArgb(255,104,46):accent):Color.FromArgb(83,82,81),133+i*8,72,6,5);
             TextAt(g,current.Target>0?"升挡目标  "+Math.Round(current.Target).ToString("0"):"升挡目标  —",small,secondary,132,84);
 
             TextAt(g,"当前挡",small,secondary,288,11); TextAt(g,"建议挡",small,secondary,370,11);
@@ -257,7 +263,7 @@ namespace HP2ShiftLight
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             timer.Stop(); timer.Dispose(); telemetry.Dispose();
-            label.Dispose(); digits.Dispose(); gearFont.Dispose(); speedDigits.Dispose(); small.Dispose();
+            pursuit.Dispose(); label.Dispose(); digits.Dispose(); gearFont.Dispose(); speedDigits.Dispose(); small.Dispose();
             base.OnFormClosed(e);
         }
         internal static void EnableMonitorDpi()

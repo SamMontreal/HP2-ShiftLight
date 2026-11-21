@@ -4,7 +4,7 @@ An external tachometer and gear advisor for the PS2 recompilation of Need for Sp
 
 [Download for Windows](https://github.com/SamMontreal/HP2-ShiftLight/releases/latest) · [中文使用说明](README.zh-CN.txt)
 
-The 1.5.1 driving panel adds road speed in km/h and a two-axis G meter beside engine RPM and gear advice. The marker and signed values show the inertial load felt by the driver. Acceleration moves the marker down, braking moves it up, a left turn moves it right, and a right turn moves it left. Each ring is 1 g. The signed numbers show the driver’s horizontal inertial load even beyond the outer ring. The gauge projects the game’s world acceleration onto the current vehicle axes, reverses the sign and smooths it over 90 ms of simulation time.
+The 1.6.0 main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both use translucent charcoal, silver framing and amber highlights drawn from the original race HUD. Both close when their game exits. The speed and RPM displays are live. The G marker and readings average the driver's lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time.
 
 ## Install and play
 
@@ -16,7 +16,11 @@ The 1.5.1 driving panel adds road speed in km/h and a two-axis G meter beside en
 
 The advisor reads the local player's nine-point engine torque curve, forward gear ratios, throttle and clutch state through a read-only Windows handle. It compares full-throttle wheel force at the same road speed in every usable gear. Estimates assume an engaged clutch. Wheelspin or a change of speed during a shift can affect the actual landing RPM.
 
-Red requests the next sequential gear once it provides more wheel force at both the current and estimated engagement speed. Amber can prepare the driver before crossover. A safe lower gear can trigger green on the first fresh sample at 15% throttle and 1% force gain (0.4% to hold). The estimate uses recent road acceleration and separately observed shift durations and speed changes for completed upshifts and downshifts. Before a sample is available it uses a 220 ms estimate. Lower gears are screened against the vehicle's redline with extra headroom. When the game supplies no valid redline, the fallback is 90% of maximum RPM. The panel clears its lights during gear changes, pauses and replays.
+Red indicates the next sequential gear will land at peak available engine power with full throttle. When the peak cannot be reached before fuel cut, the advisor maximises attainable landing power while leaving 75 RPM of headroom. The percentage shows predicted landing power relative to the actual engine peak. Amber can lead the cue by up to 120 ms. Lifting off or braking still permits green downshift advice when the lower gear safely improves available wheel force on both sides of clutch engagement. The clutch-open estimate starts at 220 ms and learns separately from completed shifts. Advice clears during shifts, pauses and replays.
+
+## Hot Pursuit air warning
+
+The optional 1.4.6 cloud runtime launches the installed companion when a police-enabled race starts. With the stock game, use the included joint launcher. The air panel tracks the local racer's helicopter target. Before selection it can list eligible attacks. After selection it reads the game's committed preset and reports rockets, barrel drops (including paired drops) or spike strips ahead of the first salvo. It clears a cancelled run or a change of target. It stays hidden in ordinary races and when driving as the officer.
 
 ## Build
 

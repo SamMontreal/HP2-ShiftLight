@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -16,6 +17,7 @@ namespace HP2ShiftLight
         public float Rpm;
         public double SpeedKmh, LateralG, LongitudinalG;
         public bool HasG;
+        public AirWarning Air;
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
         public bool PreparingUp;
@@ -26,14 +28,14 @@ namespace HP2ShiftLight
     {
         // The PS2 engine interpolates nine equally spaced torque samples.
         // Within each interval, full-throttle power is proportional to r * (m*r + b).
-        public static double Peak(byte[] info)
+        public static double Peak(byte[] info, double ceiling = double.PositiveInfinity)
         {
             double idle = BitConverter.ToSingle(info, 0);
             double limit = BitConverter.ToSingle(info, 8);
             if (!(idle >= 0 && idle < 4000 && limit > idle + 500 && limit <= 20000)) return 0;
             double width = (limit - idle) / 8, best = 0, at = 0;
             // GetEngineTorque cuts positive drive torque at limit minus 100 RPM.
-            double last = Math.Ceiling(limit - 100) - 1;
+            double last = Math.Min(ceiling, Math.Ceiling(limit - 100) - 1);
             for (int i = 0; i < 8; i++)
             {
                 double r = idle + i * width, upper = Math.Min(r + width, last);
@@ -67,7 +69,7 @@ namespace HP2ShiftLight
         private readonly double[] relative=new double[9];
         private int currentCar, currentGear, topGear, upGear;
         public double Limit, Target, PeakPower, DownCeiling;
-        private double idle, width;
+        private double idle, width, peakRpm;
 
         public bool Set(int car, int gear, int top, byte[] data, byte[] gears)
         {
@@ -79,7 +81,7 @@ namespace HP2ShiftLight
             Buffer.BlockCopy(gears,0,ratios,0,top*4);
             currentCar=car; currentGear=gear; topGear=top; upGear=0; Target=0; PeakPower=0;
             idle=BitConverter.ToSingle(curve,0); Limit=BitConverter.ToSingle(curve,8);
-            double peakRpm=Power.Peak(curve);
+            peakRpm=Power.Peak(curve);
             if (peakRpm<=0) return false;
             width=(Limit-idle)/8;
             // Retail EngineInfo exposes maximum RPM at +8 and tach redline at +4.
@@ -96,7 +98,7 @@ namespace HP2ShiftLight
                 if (gear>0 && i==gear+1 && ratio>0 && ratio<1)
                 {
                     upGear=i;
-                    Target=FindShift(ratio);
+                    Target=ShiftTarget(ratio);
                 }
             }
             return PeakPower>0;
@@ -110,25 +112,23 @@ namespace HP2ShiftLight
             row.Suggested=moving?currentGear:1;
             if (!moving) return row;
 
-            double arrival=rpm*landingScale, keep=PowerFraction(arrival);
+            double arrival=rpm*landingScale;
             row.SuggestedRpm=rpm;
             row.SuggestedPower=row.CurrentPower;
             if (upGear!=0) {
+                if (landingScale!=1) row.Target=ShiftTarget(landingScale*relative[upGear]);
                 row.NextRpm=arrival*relative[upGear];
                 row.NextPower=PowerFraction(row.NextRpm);
             }
             double bestGain=0;
-            for (int candidate=1;candidate<=Math.Min(topGear,currentGear+1);candidate++)
+            for (int candidate=1;candidate<currentGear;candidate++)
             {
-                if (candidate==currentGear || (candidate>currentGear && candidate!=upGear)) continue;
                 double ratio=relative[candidate];
-                bool lower=candidate<currentGear;
-                if (lower && (ratio<=1 || rpm*ratio*Math.Max(1,upperScale)>=DownCeiling)) continue;
-                double candidateArrival=lower ? rpm*downScale : arrival;
-                double now=rpm*ratio, then=candidateArrival*ratio;
+                if (ratio<=1 || rpm*ratio*Math.Max(1,upperScale)>=DownCeiling) continue;
+                double now=rpm*ratio, then=rpm*downScale*ratio;
                 if (Math.Min(now,then)<idle || Math.Max(now,then)>=Limit-100) continue;
                 double currentChoice=PowerFraction(now), arrivalChoice=PowerFraction(then);
-                double stay=lower ? PowerFraction(candidateArrival) : keep;
+                double stay=PowerFraction(rpm*downScale);
                 if (currentChoice<=row.CurrentPower || arrivalChoice<=stay) continue;
                 // Both the immediate shift and the projected clutch engagement must win.
                 double gain=Math.Min(RelativeGain(currentChoice,row.CurrentPower),RelativeGain(arrivalChoice,stay));
@@ -158,37 +158,16 @@ namespace HP2ShiftLight
             return PeakPower>0 && rpm>0 && rpm<Limit-100 ? Math.Max(0,rpm*Torque(rpm))/PeakPower : 0;
         }
 
-        private double Gain(double rpm, double ratio)
+        private double ShiftTarget(double landingRatio)
         {
-            // Same road speed, same final drive: next wheel torque minus current,
-            // divided by the current gear ratio. The differential cancels.
-            return ratio*Torque(rpm*ratio)-Torque(rpm);
-        }
-
-        private double FindShift(double ratio)
-        {
-            // Both wheel-force curves are linear between their combined breakpoints.
-            // Walk back from fuel cut to find the start of the sustained next-gear advantage.
-            double last=Limit-100;
-            double first=idle/ratio;
-            if (first>last || Gain(last,ratio)<0) return last;
-            double[] marks=new double[20];
-            int n=0;
-            marks[n++]=first; marks[n++]=last;
-            for (int i=1;i<=8;i++)
-            {
-                double p=idle+i*width;
-                if (p>first && p<last) marks[n++]=p;
-                p/=ratio;
-                if (p>first && p<last) marks[n++]=p;
-            }
-            Array.Sort(marks,0,n);
-            for (int i=n-1;i>0;i--)
-            {
-                double a=marks[i-1], b=marks[i], ga=Gain(a,ratio), gb=Gain(b,ratio);
-                if (ga<0) return a+(b-a)*(-ga)/(gb-ga);
-            }
-            return first;
+            if (!(landingRatio>0)) return 0;
+            double cut=Limit-100;
+            double target=peakRpm/landingRatio;
+            if (target<cut) return target;
+            // A wide ratio step can make the engine peak unreachable. Look for
+            // the highest available landing power with room to shift before fuel cut.
+            double attainable=Power.Peak(curve,(cut-75)*landingRatio);
+            return attainable>0 ? attainable/landingRatio : 0;
         }
     }
 
@@ -235,7 +214,7 @@ namespace HP2ShiftLight
                 row.SuggestedRpm = row.NextRpm = row.SuggestedPower = row.NextPower = row.Target = row.ForceGain = 0;
                 return;
             }
-            if (!row.Driving || row.Gear <= 0 || !(throttle > .05f))
+            if (!row.Driving || row.Gear <= 0)
             {
                 Reset();
                 return;
@@ -250,9 +229,13 @@ namespace HP2ShiftLight
             double rate = rises >= 2 ? rpmPerMs : 0;
             double lead = throttle >= .35f ? Math.Min(180, rate * 120) : 0;
             bool upAvailable = row.Target>0 && row.NextGear==gear+1 && row.NextPower>0;
-            if (upAvailable && row.Suggested>=gear) {
+            if (upAvailable && throttle>.05f) {
                 row.PreparingUp = row.Rpm<row.Target && row.Rpm+lead>=row.Target;
-                if (row.Rpm>=row.Target && row.Suggested==row.NextGear) {
+                if (row.Rpm>=row.Target) {
+                    row.Suggested=row.NextGear;
+                    row.SuggestedRpm=row.NextRpm;
+                    row.SuggestedPower=row.NextPower;
+                    row.ForceGain=0;
                     downGear=0;
                     row.Advice=ShiftAdvice.Up;
                     return;
@@ -263,7 +246,7 @@ namespace HP2ShiftLight
             // A small release band prevents a tie from toggling the cue.
             bool lower=row.Suggested>0 && row.Suggested<gear;
             bool hold=lower && downGear==row.Suggested;
-            if (lower && throttle>=.15f && row.ForceGain>=(hold?.004:.01)) {
+            if (lower && row.ForceGain>=(hold?.004:.01)) {
                 downGear=row.Suggested;
                 row.Advice=ShiftAdvice.Down;
             } else {
@@ -319,11 +302,11 @@ namespace HP2ShiftLight
             if (!changing) fromGear=gear;
         }
 
-        public double Scale(bool lower,out double upper)
+        public double Scale(bool lower,out double upper, bool coasting = false)
         {
             int i=lower?0:1;
             // Blend a completed shift's measured speed change with current road acceleration.
-            double predicted=samples[i]>0 ? .65*drift[i]+.35*rate : rate;
+            double predicted=samples[i]>0 && !coasting ? .65*drift[i]+.35*rate : rate;
             double span=duration[i], denom=Math.Max(1,speed);
             upper=1+Math.Max(0,Math.Max(rate,predicted))*(span+60)/denom;
             return 1+Math.Max(-.10,Math.Min(.10,predicted*span/denom));
@@ -333,22 +316,46 @@ namespace HP2ShiftLight
     // Horizontal inertial load felt by the driver, positive right and forward.
     internal sealed class PlanarLoad
     {
+        private struct Sample
+        {
+            public double T, X, Y;
+        }
+        private const double Window=.5;
+        private readonly List<Sample> samples=new List<Sample>(40);
         private int vehicle;
-        private double time, right, forward;
+        private double right, forward;
 
-        public void Reset() { vehicle=0; }
+        public void Reset() { samples.Clear(); vehicle=0; }
 
         public void Apply(ref Reading row,int car,double seconds,int yaw,float ax,float ay)
         {
             if (double.IsNaN(seconds) || double.IsInfinity(seconds) || float.IsNaN(ax) || float.IsNaN(ay) ||
                 float.IsInfinity(ax) || float.IsInfinity(ay)) { Reset(); return; }
             double angle=yaw*(2*Math.PI/65536), c=Math.Cos(angle), s=Math.Sin(angle);
-            double x=(ay*c-ax*s)/9.80665, y=-(ax*c+ay*s)/9.80665;
-            double dt=seconds-time;
-            double blend=vehicle==car && dt>=0 && dt<.3 ? 1-Math.Exp(-dt/.09) : 1;
-            right+=(x-right)*blend;
-            forward+=(y-forward)*blend;
-            vehicle=car; time=seconds;
+            var point=new Sample {T=seconds,X=(ay*c-ax*s)/9.80665,Y=-(ax*c+ay*s)/9.80665};
+            if (vehicle!=car || (samples.Count>0 && (seconds<samples[samples.Count-1].T ||
+                seconds-samples[samples.Count-1].T>.3))) Reset();
+            vehicle=car;
+            if (samples.Count==0) { right=point.X; forward=point.Y; }
+            if (samples.Count==0 || seconds>samples[samples.Count-1].T)
+            {
+                samples.Add(point);
+                double cutoff=seconds-Window;
+                int first=0;
+                while (first+1<samples.Count && samples[first+1].T<=cutoff) first++;
+                if (first>0) samples.RemoveRange(0,first);
+                // Integrate the piecewise-linear samples, clipping the oldest interval.
+                double areaX=0, areaY=0;
+                for (int i=1;i<samples.Count;i++)
+                {
+                    Sample a=samples[i-1], b=samples[i];
+                    double span=b.T-Math.Max(a.T,cutoff), fraction=span/(b.T-a.T);
+                    areaX+=span*(b.X+.5*fraction*(a.X-b.X));
+                    areaY+=span*(b.Y+.5*fraction*(a.Y-b.Y));
+                }
+                double duration=seconds-Math.Max(samples[0].T,cutoff);
+                if (duration>0) { right=areaX/duration; forward=areaY/duration; }
+            }
             row.HasG=true; row.LateralG=right; row.LongitudinalG=forward;
         }
     }
@@ -367,16 +374,18 @@ namespace HP2ShiftLight
         private readonly ShiftState shift = new ShiftState();
         private readonly GearModel model = new GearModel();
         private SafeProcessHandle handle;
-        private Process process;
+        private Process process, session;
+        public bool GameEnded { get { return session!=null && session.HasExited; } }
         private long ram, retry, tickTime;
         private int lastTick, lastCar;
         private Reading lastReading;
         private readonly byte[] gearbox = new byte[16];
         private readonly byte[] word = new byte[4], motion = new byte[20], gearRatios = new byte[8*4], info = new byte[52];
         private string waiting = "等待 HP2 启动";
+        private readonly Func<int,int> readWord;
         private const int MaxRam = 0x10000000;
 
-        public Telemetry(string dir) { gameDir = Path.GetFullPath(dir); }
+        public Telemetry(string dir) { gameDir = Path.GetFullPath(dir); readWord=Int; }
 
         private Reading Idle(string why)
         {
@@ -391,7 +400,7 @@ namespace HP2ShiftLight
         {
             try
             {
-                if (process != null && process.HasExited) { Dispose(); retry = 0; }
+                if (GameEnded) return Idle("游戏已退出");
                 if (process == null)
                 {
                     if (clock.ElapsedMilliseconds >= retry) Attach();
@@ -399,20 +408,24 @@ namespace HP2ShiftLight
                 }
                 if (Int(0x330544) != 6) return Idle("已连接 · 等待比赛");
                 int p = Int(0x330728);    // Player::Players[0], even in two-player races
-                if (!Pointer(p)) return Idle("等待玩家车辆");
+                if (!IsGuestPointer(p)) return Idle("等待玩家车辆");
                 int mode = Int(p + 196);
                 int replay = Int(0x330148);
-                if (mode == 1 || (Pointer(replay) && Int(replay+16) != 0)) return Idle("暂停");
-                if (mode == 4 || mode == 7 || (Pointer(replay) && Int(replay) != 0)) return Idle("回放");
-                if (mode != 2) return Idle(mode == 5 ? "等待发车" : "等待驾驶");
+                if (mode == 1 || (IsGuestPointer(replay) && Int(replay+16) != 0)) return Idle("暂停");
+                if (mode == 4 || mode == 7 || (IsGuestPointer(replay) && Int(replay) != 0)) return Idle("回放");
+                if (mode != 2) {
+                    var waitingRow=Idle(mode == 5 ? "等待发车" : "等待驾驶");
+                    if (mode==5) waitingRow.Air=Pursuit.Read(readWord,Int(p+4));
+                    return waitingRow;
+                }
                 int car = Int(p+4);
-                if (!Pointer(car)) return Idle("等待玩家车辆");
+                if (!IsGuestPointer(car)) return Idle("等待玩家车辆");
                 int mover = Int(car+48);
-                if (!Pointer(mover) || Int(mover+4) != 0x2aeac8 || Int(mover+84) != car) return Idle("等待车辆物理数据");
+                if (!IsGuestPointer(mover) || Int(mover+4) != 0x2aeac8 || Int(mover+84) != car) return Idle("等待车辆物理数据");
                 int engine = Int(mover+64), drive = Int(mover+68);
-                if (!Pointer(engine) || !Pointer(drive)) return Idle("等待动力数据");
+                if (!IsGuestPointer(engine) || !IsGuestPointer(drive)) return Idle("等待动力数据");
                 int ei = Int(engine+16), di = Int(drive+16);
-                if (!Pointer(ei) || !Pointer(di) || Int(drive+20) != engine) return Idle("等待动力数据");
+                if (!IsGuestPointer(ei) || !IsGuestPointer(di) || Int(drive+20) != engine) return Idle("等待动力数据");
                 int top = Int(di+24);
                 Read(ei, info);
                 if (top < 1 || top > 8) return Idle("动力曲线不可用");
@@ -452,7 +465,7 @@ namespace HP2ShiftLight
                 landing.Observe(car,gear,BitConverter.ToSingle(motion,0),changingGear,throttle,now);
                 double upper, unused;
                 double upScale=landing.Scale(false,out unused);
-                double downScale=landing.Scale(true,out upper);
+                double downScale=landing.Scale(true,out upper,throttle<=.05f);
                 Reading row=model.AtSpeed(rpm,moving,upScale,upper,downScale);
                 shift.Apply(model, ref row, moving ? throttle : 0, changingGear, now);
                 row.SpeedKmh=Math.Abs((double)roadSpeed)*3.6;
@@ -463,13 +476,14 @@ namespace HP2ShiftLight
                 if (Int(p+4)!=car || Int(0x330728)!=p) return Idle("等待玩家车辆");
                 float seconds=BitConverter.ToSingle(BitConverter.GetBytes(tick),0);
                 load.Apply(ref row,car,seconds,heading,BitConverter.ToSingle(acceleration,0),BitConverter.ToSingle(acceleration,4));
+                row.Air=Pursuit.Read(readWord,car);
                 lastReading = row;
                 return row;
             }
             catch (Exception e)
             {
                 if (!(e is IOException || e is InvalidOperationException || e is Win32Exception)) throw;
-                Dispose(); retry = clock.ElapsedMilliseconds+700;
+                ReleaseReader(); retry = clock.ElapsedMilliseconds+700;
                 return Idle("等待游戏数据");
             }
         }
@@ -508,6 +522,11 @@ namespace HP2ShiftLight
                         {
                             ProcessModule module = candidate.MainModule;
                             if (module == null || !String.Equals(file,module.FileName,StringComparison.OrdinalIgnoreCase)) continue;
+                            if (session==null) {
+                                try { session=Process.GetProcessById(candidate.Id); }
+                                catch (ArgumentException) { continue; }
+                            }
+                            if (session.Id!=candidate.Id) continue;
                             long data = DataStart(file);
                             if (data <= 0) continue;
                             read = OpenProcess(0x1010,false,candidate.Id); // query-limited and read-only
@@ -558,20 +577,26 @@ namespace HP2ShiftLight
                 BitConverter.ToUInt32(data,0)==a && BitConverter.ToUInt32(data,4)==b;
         }
 
-        private static bool Pointer(int a) { return (a & 3)==0 && a>=0x100000 && a < MaxRam-0x1000; }
+        internal static bool IsGuestPointer(int a) { return (a & 3)==0 && a>=0x100000 && a < MaxRam-0x1000; }
         private void Read(int address, byte[] dst) { Read(address,dst,dst.Length); }
         private void Read(int address, byte[] dst, int length)
         {
             UIntPtr n;
-            if (!Pointer(address) || !ReadProcessMemory(handle,new IntPtr(ram+address),dst,(UIntPtr)length,out n) || n.ToUInt64()!=(uint)length)
+            if (!IsGuestPointer(address) || !ReadProcessMemory(handle,new IntPtr(ram+address),dst,(UIntPtr)length,out n) || n.ToUInt64()!=(uint)length)
                 throw new IOException("Game snapshot unavailable");
         }
         private int Int(int a) { Read(a,word); return BitConverter.ToInt32(word,0); }
-        public void Dispose()
+        private void ReleaseReader()
         {
             if (handle!=null) { handle.Dispose(); handle=null; }
             if (process!=null) { process.Dispose(); process=null; }
             ram=0; lastCar=0;
+        }
+
+        public void Dispose()
+        {
+            ReleaseReader();
+            if (session!=null) { session.Dispose(); session=null; }
         }
     }
 }
