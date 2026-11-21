@@ -64,7 +64,7 @@ namespace HP2ShiftLight
         private readonly byte[] ratios=new byte[8*4];
         private readonly double[] relative=new double[9];
         private int currentCar, currentGear, topGear, upGear;
-        public double Limit, Target, PeakPower;
+        public double Limit, Target, PeakPower, DownCeiling;
         private double idle, width;
 
         public bool Set(int car, int gear, int top, byte[] data, byte[] gears)
@@ -80,6 +80,10 @@ namespace HP2ShiftLight
             double peakRpm=Power.Peak(curve);
             if (peakRpm<=0) return false;
             width=(Limit-idle)/8;
+            // Retail EngineInfo exposes maximum RPM at +8 and tach redline at +4.
+            double redline=BitConverter.ToSingle(curve,4);
+            if (!(redline>idle && redline<=Limit)) redline=.90*Limit;
+            DownCeiling=Math.Min(redline,Limit-100)-Math.Max(100,.02*Limit);
             double driveRatio=gear>0 ? BitConverter.ToSingle(ratios,(gear-1)*4) : 1;
             if (!(driveRatio>0) || double.IsInfinity(driveRatio)) return false;
             PeakPower=peakRpm*Torque(peakRpm);
@@ -87,14 +91,16 @@ namespace HP2ShiftLight
             {
                 double ratio=BitConverter.ToSingle(ratios,(i-1)*4)/driveRatio;
                 relative[i]=ratio>0 && !double.IsInfinity(ratio) ? ratio : 0;
-                if (gear<=0 || i<=gear || !(ratio>0 && ratio<1)) continue;
-                double point=FindShift(ratio);
-                if (upGear==0 || point<Target) { Target=point; upGear=i; }
+                if (gear>0 && i==gear+1 && ratio>0 && ratio<1)
+                {
+                    upGear=i;
+                    Target=FindShift(ratio);
+                }
             }
             return PeakPower>0;
         }
 
-        public Reading AtSpeed(float rpm, bool moving)
+        public Reading AtSpeed(float rpm, bool moving, double landingScale = 1, double upperScale = 1, double downScale = 1)
         {
             Reading row=new Reading { Car=currentCar,Gear=currentGear,Top=topGear,Rpm=rpm,
                 Target=Target,Limit=Limit,CurrentPower=PowerFraction(rpm),NextGear=upGear };
@@ -102,26 +108,38 @@ namespace HP2ShiftLight
             row.Suggested=moving?currentGear:1;
             if (!moving) return row;
 
-            row.SuggestedRpm=rpm; row.SuggestedPower=row.CurrentPower;
-            if (upGear!=0) row.NextRpm=rpm*relative[upGear];
-            // At a fixed wheel speed, maximizing available wheel force is equivalent to
-            // maximizing engine power. Common final drive and wheel radius cancel.
-            for (int gear=1;gear<=topGear;gear++)
-            {
-                if (gear==currentGear || relative[gear]<=0) continue;
-                double projected=rpm*relative[gear];
-                if (projected<idle || projected>=Limit-100 || (gear<currentGear && projected>Limit-300)) continue;
-                double power=PowerFraction(projected);
-                if (gear>currentGear && relative[gear]<1 && power>row.NextPower)
-                {
-                    row.NextGear=gear; row.NextRpm=projected; row.NextPower=power;
-                }
-                if (power<=row.SuggestedPower+1e-7) continue;
-                row.Suggested=gear; row.SuggestedRpm=projected; row.SuggestedPower=power;
+            double arrival=rpm*landingScale, keep=PowerFraction(arrival);
+            row.SuggestedRpm=rpm;
+            row.SuggestedPower=row.CurrentPower;
+            if (upGear!=0) {
+                row.NextRpm=arrival*relative[upGear];
+                row.NextPower=PowerFraction(row.NextRpm);
             }
-            if (row.CurrentPower>0) row.ForceGain=row.SuggestedPower/row.CurrentPower-1;
-            else if (row.SuggestedPower>0) row.ForceGain=double.PositiveInfinity;
+            double bestGain=0;
+            for (int candidate=1;candidate<=Math.Min(topGear,currentGear+1);candidate++)
+            {
+                if (candidate==currentGear || (candidate>currentGear && candidate!=upGear)) continue;
+                double ratio=relative[candidate];
+                bool lower=candidate<currentGear;
+                if (lower && (ratio<=1 || rpm*ratio*Math.Max(1,upperScale)>=DownCeiling)) continue;
+                double candidateArrival=lower ? rpm*downScale : arrival;
+                double now=rpm*ratio, then=candidateArrival*ratio;
+                if (Math.Min(now,then)<idle || Math.Max(now,then)>=Limit-100) continue;
+                double currentChoice=PowerFraction(now), arrivalChoice=PowerFraction(then);
+                double stay=lower ? PowerFraction(candidateArrival) : keep;
+                if (currentChoice<=row.CurrentPower || arrivalChoice<=stay) continue;
+                // Both the immediate shift and the projected clutch engagement must win.
+                double gain=Math.Min(RelativeGain(currentChoice,row.CurrentPower),RelativeGain(arrivalChoice,stay));
+                if (gain<bestGain || (gain==bestGain && arrivalChoice<=row.SuggestedPower)) continue;
+                bestGain=gain; row.Suggested=candidate; row.SuggestedRpm=then;
+                row.SuggestedPower=arrivalChoice; row.ForceGain=gain;
+            }
             return row;
+        }
+
+        private static double RelativeGain(double available,double current)
+        {
+            return current>0 ? available/current-1 : double.PositiveInfinity;
         }
 
         private double Torque(double rpm)
@@ -175,20 +193,15 @@ namespace HP2ShiftLight
 
     internal sealed class ShiftState
     {
-        private const double DownGain = .04;
-        private const double KeepDownGain = .02;
-        private const int DownConfirmMs = 60;
-        private int car, gear, downGear, rises;
-        private long downSince, lastTime = -1;
+        private int car, gear, rises, downGear;
+        private long lastTime = -1;
         private double lastRpm, rpmPerMs;
-        private ShiftAdvice advice;
 
         public void Reset()
         {
             car = gear = downGear = rises = 0;
             lastTime = -1;
             rpmPerMs = 0;
-            advice = ShiftAdvice.None;
         }
 
         private void TrackRpm(double rpm, long now)
@@ -234,51 +247,86 @@ namespace HP2ShiftLight
             TrackRpm(row.Rpm, now);
             double rate = rises >= 2 ? rpmPerMs : 0;
             double lead = throttle >= .35f ? Math.Min(180, rate * 120) : 0;
-            bool upAvailable = row.Target > 0 && row.NextGear > gear && row.NextPower > 0 && row.Suggested >= gear;
-            if (upAvailable)
-            {
-                row.PreparingUp = row.Rpm < row.Target && row.Rpm + lead >= row.Target;
-                // A predictive cue is useful to the driver, but acting on red must
-                // already deliver at least the available drive force in this gear.
-                if (row.Rpm >= row.Target && row.NextPower >= row.CurrentPower)
-                {
-                    row.Suggested = row.NextGear;
-                    row.SuggestedRpm = row.NextRpm;
-                    row.SuggestedPower = row.NextPower;
-                    row.ForceGain = row.CurrentPower > 0 ? row.NextPower / row.CurrentPower - 1 : double.PositiveInfinity;
-                    downGear = 0;
-                    row.Advice = advice = ShiftAdvice.Up;
+            bool upAvailable = row.Target>0 && row.NextGear==gear+1 && row.NextPower>0;
+            if (upAvailable && row.Suggested>=gear) {
+                row.PreparingUp = row.Rpm<row.Target && row.Rpm+lead>=row.Target;
+                if (row.Rpm>=row.Target && row.Suggested==row.NextGear) {
+                    downGear=0;
+                    row.Advice=ShiftAdvice.Up;
                     return;
                 }
             }
 
-            bool holdingDown = advice == ShiftAdvice.Down && downGear == row.Suggested;
-            bool down = row.Suggested > 0 && row.Suggested < gear &&
-                        throttle >= (holdingDown ? .18f : .25f) &&
-                        row.ForceGain >= (holdingDown ? KeepDownGain : DownGain);
-            if (down && rate > 0)
-            {
-                // Avoid a downshift that would already run out of headroom during the input.
-                double ahead = Math.Min(350, rate * 200);
-                double landing = row.SuggestedRpm * (1 + ahead / row.Rpm);
-                down = landing < row.Limit - 100 &&
-                       model.PowerFraction(landing) >= model.PowerFraction(row.Rpm + ahead) * (1 + KeepDownGain);
+            // Report a safe lower gear on the first fresh physics sample.
+            // A small release band prevents a tie from toggling the cue.
+            bool lower=row.Suggested>0 && row.Suggested<gear;
+            bool hold=lower && downGear==row.Suggested;
+            if (lower && throttle>=.15f && row.ForceGain>=(hold?.004:.01)) {
+                downGear=row.Suggested;
+                row.Advice=ShiftAdvice.Down;
+            } else {
+                downGear=0;
+                row.Advice=ShiftAdvice.None;
             }
-            if (down)
-            {
-                if (downGear != row.Suggested) { downGear = row.Suggested; downSince = now; }
-                if (now - downSince >= DownConfirmMs)
-                {
-                    row.Advice = advice = ShiftAdvice.Down;
-                    return;
-                }
-            }
-            else downGear = 0;
-            row.Advice = advice = ShiftAdvice.None;
         }
     }
 
 
+
+    // Observe road speed, including while the clutch is open. Engine flare during
+    // a shift cannot be used to estimate the road speed at re-engagement.
+    internal sealed class ShiftLanding
+    {
+        private int car, fromGear;
+        private long last=-1, opened=-1;
+        private double speed, rate, openSpeed;
+        private readonly double[] duration={220,220}, drift={0,0};
+        private readonly int[] samples=new int[2];
+
+        public void Reset()
+        {
+            car=fromGear=0; last=opened=-1; speed=rate=0;
+            Array.Clear(samples,0,2);
+            for (int i=0;i<2;i++) { duration[i]=220; drift[i]=0; }
+        }
+
+        public void Observe(int id,int gear,double roadSpeed,bool changing,float throttle,long now)
+        {
+            if (car!=id || !(roadSpeed>1) || now<last || (last>=0 && now-last>220)) Reset();
+            car=id;
+            if (!(roadSpeed>1) || double.IsInfinity(roadSpeed)) return;
+            if (last>=0 && now>last) {
+                double instantaneous=(roadSpeed-speed)/(now-last);
+                rate=Math.Abs(instantaneous)<.04 ? .55*rate+.45*instantaneous : 0;
+            }
+            if (changing && opened<0 && fromGear>0) {
+                opened=last; openSpeed=speed;
+            } else if (!changing && opened>=0) {
+                long elapsed=now-opened;
+                double change=(roadSpeed-openSpeed)/Math.Max(1,elapsed);
+                if (gear>0 && Math.Abs(gear-fromGear)==1 && elapsed>=60 && elapsed<=750 &&
+                    throttle>=.35f && openSpeed>5 && Math.Abs(change)<.025) {
+                    int i=gear<fromGear?0:1;
+                    double weight=1.0/Math.Min(5,++samples[i]);
+                    duration[i]+=weight*(elapsed-duration[i]);
+                    drift[i]+=weight*(change-drift[i]);
+                }
+                opened=-1;
+            }
+            last=now; speed=roadSpeed;
+            if (!changing) fromGear=gear;
+        }
+
+        public double Scale(bool lower,out double upper)
+        {
+            int i=lower?0:1;
+            // Blend a completed shift's measured speed change with current road acceleration.
+            double predicted=samples[i]>0 ? .65*drift[i]+.35*rate : rate;
+            double span=duration[i], denom=Math.Max(1,speed);
+            upper=1+Math.Max(0,Math.Max(rate,predicted))*(span+60)/denom;
+            return 1+Math.Max(-.10,Math.Min(.10,predicted*span/denom));
+        }
+    }
 
     internal sealed class Telemetry : IDisposable
     {
@@ -288,6 +336,7 @@ namespace HP2ShiftLight
         private static extern bool ReadProcessMemory(SafeProcessHandle handle, IntPtr address, [Out] byte[] data, UIntPtr bytes, out UIntPtr count);
         private readonly string gameDir;
         private readonly Stopwatch clock = Stopwatch.StartNew();
+        private readonly ShiftLanding landing = new ShiftLanding();
         private readonly ShiftState shift = new ShiftState();
         private readonly GearModel model = new GearModel();
         private SafeProcessHandle handle;
@@ -305,6 +354,7 @@ namespace HP2ShiftLight
         private Reading Idle(string why)
         {
             shift.Reset();
+            landing.Reset();
             lastCar = 0;
             return new Reading { Status = why };
         }
@@ -350,6 +400,7 @@ namespace HP2ShiftLight
                 if (clock.ElapsedMilliseconds - tickTime > 300)
                 {
                     shift.Reset();
+                    landing.Reset();
                     return new Reading { Status = "等待比赛继续" };
                 }
                 if (!fresh) return lastReading;
@@ -366,8 +417,13 @@ namespace HP2ShiftLight
                 // Forward ratios start at raw gear index 2 (reverse and neutral precede them).
                 Read(di+40,gearRatios,top*4);
                 if (!model.Set(car,gear,top,info,gearRatios)) return Idle("动力数据不可用");
-                Reading row=model.AtSpeed(rpm,moving);
-                shift.Apply(model, ref row, moving ? throttle : 0, changingGear, clock.ElapsedMilliseconds);
+                long now=clock.ElapsedMilliseconds;
+                landing.Observe(car,gear,BitConverter.ToSingle(motion,0),changingGear,throttle,now);
+                double upper, unused;
+                double upScale=landing.Scale(false,out unused);
+                double downScale=landing.Scale(true,out upper);
+                Reading row=model.AtSpeed(rpm,moving,upScale,upper,downScale);
+                shift.Apply(model, ref row, moving ? throttle : 0, changingGear, now);
                 lastReading = row;
                 return row;
             }
