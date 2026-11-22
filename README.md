@@ -2,14 +2,14 @@
 
 An external tachometer and gear advisor for the PS2 recompilation of Need for Speed: Hot Pursuit 2 on Windows x64. Supports the stock 0.14 runtime and the Timelapse Clouds runtime. The overlay shows RPM, current gear, recommended gear and the estimated RPM after the shift.
 
-[Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.6.1/HP2-ShiftLight-v1.6.1-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
+[Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.6.2/HP2-ShiftLight-v1.6.2-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
 
-The 1.6.1 main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both use translucent charcoal, silver framing and amber highlights drawn from the original race HUD. Both panels pass clicks through to the game and leave keyboard focus with the player. The main gauge first appears on the starting grid and stays visible while driving. Both panels hide in menus, during pauses and replays, and when the game loses the foreground. Both close when their game exits. The speed and RPM displays are live. The G marker and readings average the driver's lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time.
+The 1.6.2 main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both use translucent charcoal, silver framing and amber highlights drawn from the original race HUD. Both panels pass clicks through to the game and leave keyboard focus with the player. The main gauge opens at launch, displays a waiting status in the menus and switches to live readings when you drive. Both close when their game exits. The speed and RPM displays are live. The G marker and readings average the driver's lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time.
 
 ## Install and play
 
 1. Extract the Windows ZIP alongside the game's `speed.exe`.
-2. Run `Play-HP2-ShiftLight.cmd` to launch the game with a dashboard that waits in the background for a race. If `Play-Volumetric-Clouds.cmd` is installed, this launcher uses it. To attach to a running game, launch `HP2-ShiftLight.exe` directly.
+2. Run `Play-HP2-ShiftLight.cmd` to launch the game and the dashboard together. If `Play-Volumetric-Clouds.cmd` is installed, this launcher uses it. To attach to a running game, launch `HP2-ShiftLight.exe` directly.
 3. The translucent overlay centers itself at the bottom of the game monitor. Red means shift up. Green means shift down. Follow the displayed gear number. When the suggested gear is several gears away, use successive inputs in sequential manual mode.
 
 ## How it chooses a gear
@@ -20,7 +20,7 @@ Red indicates the next sequential gear will land at peak available engine power 
 
 ## Hot Pursuit air warning
 
-Timelapse Clouds 1.4.10 launches the installed companion at the start of any player race. Cloud versions 1.4.6 through 1.4.9 launch it automatically in police-enabled races. With the stock game, use the included joint launcher. The air panel tracks the local racer's helicopter target. Before selection it can list eligible attacks. After selection it reads the game's committed preset and reports rockets, barrel drops (including paired drops) or spike strips ahead of the first salvo. It clears a cancelled run or a change of target. It stays hidden in ordinary races and when driving as the officer.
+Timelapse Clouds 1.4.11 starts the installed dashboard when the game opens. With older cloud runtimes or the original sky, use the joint launcher to start both at launch. With the stock game, use the included joint launcher. The air panel tracks the local racer's helicopter target. Before selection it can list eligible attacks. After selection it reads the game's committed preset and reports rockets, barrel drops (including paired drops) or spike strips ahead of the first salvo. It clears a cancelled run or a change of target. It stays hidden in ordinary races and when driving as the officer.
 
 ## Build
 

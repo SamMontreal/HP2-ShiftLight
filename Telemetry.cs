@@ -21,9 +21,7 @@ namespace HP2ShiftLight
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
         public bool PreparingUp;
-        public bool OnStartingGrid;
         public bool Driving { get { return Car != 0; } }
-        public bool InRace { get { return OnStartingGrid || Driving; } }
     }
 
     internal static class Power
@@ -439,10 +437,7 @@ namespace HP2ShiftLight
                     var waitingRow=Idle(mode == 5 ? "等待发车" : "等待驾驶");
                     if (mode==5) {
                         int gridCar=Int(p+4);
-                        if (IsGuestPointer(gridCar)) {
-                            waitingRow.OnStartingGrid=true;
-                            waitingRow.Air=Pursuit.Read(readWord,gridCar);
-                        }
+                        if (IsGuestPointer(gridCar)) waitingRow.Air=Pursuit.Read(readWord,gridCar);
                     }
                     return waitingRow;
                 }
@@ -522,11 +517,11 @@ namespace HP2ShiftLight
         {
             get
             {
-                if (process == null) return IntPtr.Zero;
+                if (session == null) return IntPtr.Zero;
                 try
                 {
-                    process.Refresh();
-                    return process.MainWindowHandle;
+                    session.Refresh();
+                    return session.MainWindowHandle;
                 }
                 catch (InvalidOperationException) { return IntPtr.Zero; }
                 catch (Win32Exception) { return IntPtr.Zero; }

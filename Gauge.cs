@@ -8,8 +8,8 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("HP2 ShiftLight")]
-[assembly: System.Reflection.AssemblyVersion("1.6.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.2.0")]
 
 namespace HP2ShiftLight
 {
@@ -56,8 +56,6 @@ namespace HP2ShiftLight
 
     internal sealed class Gauge : RaceOverlay
     {
-        [DllImport("user32")] private static extern IntPtr GetForegroundWindow();
-        [DllImport("user32")] private static extern bool IsIconic(IntPtr window);
         [DllImport("user32")] private static extern bool SetProcessDPIAware();
         [DllImport("user32")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
         [DllImport("user32")] private static extern IntPtr MonitorFromWindow(IntPtr window, uint fallback);
@@ -98,12 +96,14 @@ namespace HP2ShiftLight
         private bool reserveSide;
         private float zoom=1f;
         private Reading current;
-        private IntPtr gameWindow;
 
         public Gauge(string dir)
         {
             telemetry=new Telemetry(dir);
             Text="HP2 驾驶仪表"; BackColor=Surface; Opacity=0.88;
+            current=telemetry.Poll();
+            reserveSide=current.Air.Visible;
+            PlaceOnGameScreen(telemetry.GameWindow);
             timer.Interval=30; timer.Tick+=UpdateGauge; timer.Start();
         }
 
@@ -132,7 +132,7 @@ namespace HP2ShiftLight
 
         private void PlaceOnGameScreen(IntPtr game)
         {
-            IntPtr monitor=MonitorFromWindow(game,2u);
+            IntPtr monitor=MonitorFromWindow(game,game==IntPtr.Zero?1u:2u);
             MonitorInfo info=new MonitorInfo { Size=Marshal.SizeOf(typeof(MonitorInfo)) };
             if (!GetMonitorInfo(monitor,ref info)) return;
             uint dpi=96, x, y;
@@ -154,19 +154,12 @@ namespace HP2ShiftLight
         private void UpdateGauge(object sender, EventArgs e)
         {
             Reading next=telemetry.Poll();
-            if (telemetry.GameEnded) { Application.ExitThread(); return; }
-            if (next.InRace && (gameWindow==IntPtr.Zero || displayCheck.ElapsedMilliseconds>=600 || reserveSide!=next.Air.Visible)) {
-                gameWindow=telemetry.GameWindow;
+            if (telemetry.GameEnded) { Close(); return; }
+            if (displayCheck.ElapsedMilliseconds>=600 || reserveSide!=next.Air.Visible) {
                 reserveSide=next.Air.Visible;
-                if (gameWindow!=IntPtr.Zero) PlaceOnGameScreen(gameWindow);
-            }
-            if (!next.InRace || gameWindow==IntPtr.Zero || gameWindow!=GetForegroundWindow() || IsIconic(gameWindow)) {
-                if (pursuit.Visible) pursuit.Hide();
-                if (Visible) Hide();
-                return;
+                PlaceOnGameScreen(telemetry.GameWindow);
             }
             DisplayReading(next);
-            if (!Visible) Show();
             pursuit.UpdateFor(this,next.Air,zoom,gameArea);
         }
 
@@ -306,9 +299,7 @@ namespace HP2ShiftLight
                 if (!first) return;
                 EnableMonitorDpi();
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-                // The loop keeps polling while the game loads or returns to the menu.
-                // Passing the form to Application.Run would show it immediately.
-                using (var gauge=new Gauge(AppDomain.CurrentDomain.BaseDirectory)) Application.Run();
+                using (var gauge=new Gauge(AppDomain.CurrentDomain.BaseDirectory)) Application.Run(gauge);
             }
         }
     }
