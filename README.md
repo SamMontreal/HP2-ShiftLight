@@ -1,22 +1,26 @@
 # HP2 ShiftLight
 
-An external tachometer and gear advisor for the PS2 recompilation of Need for Speed: Hot Pursuit 2 on Windows x64. Supports the stock 0.14 runtime and the Timelapse Clouds runtime. The overlay shows RPM, current gear, recommended gear and the estimated RPM after the shift.
+An external tachometer and gear advisor for the PS2 recompilation of Need for Speed: Hot Pursuit 2 on Windows x64. Supports the stock 0.14 runtime and the Timelapse Clouds runtime. The overlay shows road speed, RPM, ten shift LEDs, current and suggested gears, and lateral and longitudinal G.
 
-[Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.6.2/HP2-ShiftLight-v1.6.2-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
+[Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.7.0/HP2-ShiftLight-v1.7.0-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
 
-The 1.6.2 main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both use translucent charcoal, silver framing and amber highlights drawn from the original race HUD. Both panels pass clicks through to the game and leave keyboard focus with the player. The main gauge opens at launch, displays a waiting status in the menus and switches to live readings when you drive. Both close when their game exits. The speed and RPM displays are live. The G marker and readings average the driver's lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time.
+The main panel is centred at the bottom of the game window. The HP panel appears beside it in police-enabled races when driving as a racer. Both pass clicks through to the game and leave keyboard focus with the player. The main gauge opens at launch, displays a waiting status in the menus and switches to live readings when you drive. Both close when their game exits.
 
 ## Install and play
 
 1. Extract the Windows ZIP alongside the game's `speed.exe`.
 2. Run `Play-HP2-ShiftLight.cmd` to launch the game and the dashboard together. If `Play-Volumetric-Clouds.cmd` is installed, this launcher uses it. To attach to a running game, launch `HP2-ShiftLight.exe` directly.
-3. The translucent overlay centers itself at the bottom of the game monitor. Red means shift up. Green means shift down. Follow the displayed gear number. When the suggested gear is several gears away, use successive inputs in sequential manual mode.
+3. Watch the LED strip for an upshift and the gear arrow for a downshift. When the suggested gear is several gears away, use successive inputs in sequential manual mode.
 
 ## How it chooses a gear
 
-The advisor reads the local player's nine-point engine torque curve, forward gear ratios, throttle and clutch state through a read-only Windows handle. It compares full-throttle wheel force at the same road speed in every usable gear. Estimates assume an engaged clutch. Wheelspin or a change of speed during a shift can affect the actual landing RPM.
+The advisor reads the local player's nine-point torque curve, gear ratios, throttle and clutch state. At the same road speed, it compares engine torque multiplied by gear ratio in each adjacent gear. The high-RPM crossover where the next gear takes over sets the shift point. If the current gear still pulls harder, the target is 75 RPM below the game's fuel cut. This calculation assumes an engaged clutch and grip at the driven wheels. [High Performance Academy, Gear Changes](https://www.hpacademy.com/courses/professional-motorsport-data-analysis/acceleration-and-gearing-gear-changes)
 
-Red indicates the next sequential gear will land at peak available engine power with full throttle. When the peak cannot be reached before fuel cut, the advisor maximises attainable landing power while leaving 75 RPM of headroom. The percentage shows predicted landing power relative to the actual engine peak. Amber can lead the cue by up to 120 ms. Lifting off or braking still permits green downshift advice when the lower gear safely improves available wheel force on both sides of clutch engagement. The clutch-open estimate starts at 220 ms and learns separately from completed shifts. Advice clears during shifts, pauses and replays.
+The first nine LEDs accumulate in green, amber and red from 82% to 98% of the gear's target. The whole strip flashes red for the upshift. With steadily rising RPM under load, the cue can lead the target by up to 120 ms, capped at 180 RPM. Lifting off clears the upshift lights. A green down arrow can still appear when a lower gear safely improves available wheel force both now and at estimated clutch engagement. The strip clears during shifts, in top gear and outside driving. The ten-LED, gear-dependent display follows AiM's programmable arrangement. The thresholds above are the settings chosen for HP2. [AiM Shift Light Module](https://www.aimsports.com/us/products/shift-light-module/index.htm)
+
+Landing power is the estimated full-throttle power after clutch engagement as a percentage of the car's peak power. It uses the recommended lower gear on a downshift and the next higher gear otherwise. A dash indicates that no landing estimate is available.
+
+The G-meter averages lateral and longitudinal inertial load over the last 0.5 seconds of simulation time, weighted by elapsed time. The rings mark 1, 2 and 3 g. Beyond 3 g the marker stays at the rim and the numbers retain the measured averages.
 
 ## Hot Pursuit air warning
 

@@ -20,7 +20,7 @@ namespace HP2ShiftLight
         public AirWarning Air;
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
-        public bool PreparingUp;
+        public int LitLamps;
         public bool Driving { get { return Car != 0; } }
     }
 
@@ -28,14 +28,14 @@ namespace HP2ShiftLight
     {
         // The PS2 engine interpolates nine equally spaced torque samples.
         // Within each interval, full-throttle power is proportional to r * (m*r + b).
-        public static double Peak(byte[] info, double ceiling = double.PositiveInfinity)
+        public static double Peak(byte[] info)
         {
             double idle = BitConverter.ToSingle(info, 0);
             double limit = BitConverter.ToSingle(info, 8);
             if (!(idle >= 0 && idle < 4000 && limit > idle + 500 && limit <= 20000)) return 0;
             double width = (limit - idle) / 8, best = 0, at = 0;
             // GetEngineTorque cuts positive drive torque at limit minus 100 RPM.
-            double last = Math.Min(ceiling, Math.Ceiling(limit - 100) - 1);
+            double last = Math.Ceiling(limit - 100) - 1;
             for (int i = 0; i < 8; i++)
             {
                 double r = idle + i * width, upper = Math.Min(r + width, last);
@@ -116,7 +116,6 @@ namespace HP2ShiftLight
             row.SuggestedRpm=rpm;
             row.SuggestedPower=row.CurrentPower;
             if (upGear!=0) {
-                if (landingScale!=1) row.Target=ShiftTarget(landingScale*relative[upGear]);
                 row.NextRpm=arrival*relative[upGear];
                 row.NextPower=PowerFraction(row.NextRpm);
             }
@@ -158,31 +157,49 @@ namespace HP2ShiftLight
             return PeakPower>0 && rpm>0 && rpm<Limit-100 ? Math.Max(0,rpm*Torque(rpm))/PeakPower : 0;
         }
 
-        private double ShiftTarget(double landingRatio)
+        private double ShiftTarget(double ratio)
         {
-            if (!(landingRatio>0)) return 0;
-            double cut=Limit-100;
-            double target=peakRpm/landingRatio;
-            if (target<cut) return target;
-            // A wide ratio step can make the engine peak unreachable. Look for
-            // the highest available landing power with room to shift before fuel cut.
-            double attainable=Power.Peak(curve,(cut-75)*landingRatio);
-            return attainable>0 ? attainable/landingRatio : 0;
+            // Compare wheel torque at one road speed. Final drive and tyre radius
+            // cancel, so only next/current gear ratio and the two torques matter.
+            double upper=Limit-100-75;
+            double lower=Math.Max(peakRpm,idle/ratio);
+            double upperGain=ratio*Torque(upper*ratio)-Torque(upper);
+            if (lower>=upper || upperGain<0) return upper;
+
+            // Between knots of either torque curve, the wheel-torque difference
+            // is linear. Walk back to the crossover that lasts to the shift limit.
+            var knots=new List<double>(16) { lower };
+            for (int i=1;i<8;i++) {
+                double here=idle+i*width, next=here/ratio;
+                if (here>lower && here<upper) knots.Add(here);
+                if (next>lower && next<upper) knots.Add(next);
+            }
+            knots.Sort();
+            for (int i=knots.Count-1;i>=0;i--) {
+                double rpm=knots[i];
+                double gain=ratio*Torque(rpm*ratio)-Torque(rpm);
+                if (gain<0)
+                    return rpm+(upper-rpm)*(-gain)/(upperGain-gain);
+                upper=rpm;
+                upperGain=gain;
+            }
+            return lower;
         }
     }
 
 
     internal sealed class ShiftState
     {
-        private int car, gear, rises, downGear;
+        internal const int LampCount=10;
+        private int car, gear, rises, downGear, steadyLamps;
         private long lastTime = -1;
-        private double lastRpm, rpmPerMs;
+        private double lastRpm, rpmPerMs, flashReleaseRpm;
 
         public void Reset()
         {
-            car = gear = downGear = rises = 0;
+            car = gear = downGear = rises = steadyLamps = 0;
             lastTime = -1;
-            rpmPerMs = 0;
+            rpmPerMs = flashReleaseRpm = 0;
         }
 
         private void TrackRpm(double rpm, long now)
@@ -204,7 +221,7 @@ namespace HP2ShiftLight
             lastTime = now;
         }
 
-        public void Apply(GearModel model, ref Reading row, float throttle, bool changingGear, long now)
+        public void Apply(ref Reading row, float throttle, bool changingGear, long now)
         {
             if (changingGear)
             {
@@ -226,21 +243,29 @@ namespace HP2ShiftLight
                 gear = row.Gear;
             }
             TrackRpm(row.Rpm, now);
-            double rate = rises >= 2 ? rpmPerMs : 0;
-            double lead = throttle >= .35f ? Math.Min(180, rate * 120) : 0;
-            bool upAvailable = row.Target>0 && row.NextGear==gear+1 && row.NextPower>0;
-            if (upAvailable && throttle>.05f) {
-                row.PreparingUp = row.Rpm<row.Target && row.Rpm+lead>=row.Target;
-                if (row.Rpm>=row.Target) {
+            if (row.Target>0 && row.NextGear==gear+1 && row.NextPower>0 && throttle>.05f) {
+                // The first nine lights accumulate at 82, 84, ... 98 percent.
+                // A small release band keeps each lamp steady across RPM noise.
+                double percent=100.0*row.Rpm/row.Target;
+                while (steadyLamps<LampCount-1 && percent>=82+2*steadyLamps) steadyLamps++;
+                while (steadyLamps>0 && percent<82+2*(steadyLamps-1)-.5) steadyLamps--;
+                row.LitLamps=steadyLamps;
+
+                double lead=throttle>=.35f && rises>=2 ? Math.Min(180,rpmPerMs*120) : 0;
+                double trigger=row.Target-lead;
+                if (row.Rpm>=trigger || (flashReleaseRpm>0 && row.Rpm>=flashReleaseRpm)) {
+                    if (flashReleaseRpm==0) flashReleaseRpm=trigger-.007*row.Target;
                     row.Suggested=row.NextGear;
                     row.SuggestedRpm=row.NextRpm;
                     row.SuggestedPower=row.NextPower;
                     row.ForceGain=0;
                     downGear=0;
+                    row.LitLamps=LampCount;
                     row.Advice=ShiftAdvice.Up;
                     return;
                 }
-            }
+            } else steadyLamps=0;
+            flashReleaseRpm=0;
 
             // Report a safe lower gear on the first fresh physics sample.
             // A small release band prevents a tie from toggling the cue.
@@ -249,6 +274,7 @@ namespace HP2ShiftLight
             if (lower && row.ForceGain>=(hold?.004:.01)) {
                 downGear=row.Suggested;
                 row.Advice=ShiftAdvice.Down;
+                row.LitLamps=0;
             } else {
                 downGear=0;
                 row.Advice=ShiftAdvice.None;
@@ -490,7 +516,7 @@ namespace HP2ShiftLight
                 double upScale=landing.Scale(false,out unused);
                 double downScale=landing.Scale(true,out upper,throttle<=.05f);
                 Reading row=model.AtSpeed(rpm,moving,upScale,upper,downScale);
-                shift.Apply(model, ref row, moving ? throttle : 0, changingGear, now);
+                shift.Apply(ref row, moving ? throttle : 0, changingGear, now);
                 row.SpeedKmh=Math.Abs((double)roadSpeed)*3.6;
                 // GetForwardAcceleration uses the world acceleration at Car+0x80.
                 // CarState::GetYawAlways reads the 16-bit heading at CarState+0x364.

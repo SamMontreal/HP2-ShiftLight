@@ -8,8 +8,8 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("HP2 ShiftLight")]
-[assembly: System.Reflection.AssemblyVersion("1.6.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.7.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.7.0.0")]
 
 namespace HP2ShiftLight
 {
@@ -78,9 +78,9 @@ namespace HP2ShiftLight
         }
         private static readonly Color Surface=HudTheme.Base, Muted=HudTheme.Silver,
             Bright=HudTheme.White, Amber=HudTheme.Orange;
-        private const int PanelWidth=620, PanelHeight=108;
-        private static readonly Color UpLit=Color.FromArgb(192,40,50), UpDim=Color.FromArgb(80,24,31),
-            DownLit=Color.FromArgb(12,135,73), DownDim=Color.FromArgb(13,60,42);
+        private const int PanelWidth=620, PanelHeight=108, LoadRange=3;
+        private static readonly Color Red=Color.FromArgb(255,83,67), Green=Color.FromArgb(89,226,141),
+            Unlit=Color.FromArgb(77,76,75);
         private readonly Stopwatch flashClock=new Stopwatch();
         private bool brightPhase;
         private readonly Font label=new Font("Microsoft YaHei UI",13,FontStyle.Bold,GraphicsUnit.Pixel);
@@ -167,13 +167,12 @@ namespace HP2ShiftLight
         {
             bool changed=next.Advice!=current.Advice || next.Car!=current.Car || next.Gear!=current.Gear;
             if (changed) flashClock.Restart();
-            bool bright=next.Advice!=ShiftAdvice.None && flashClock.ElapsedMilliseconds%500<250;
-            bool redraw=changed || bright!=brightPhase || next.Status!=current.Status || next.PreparingUp!=current.PreparingUp ||
+            bool bright=next.Advice==ShiftAdvice.Up && flashClock.ElapsedMilliseconds%360<180;
+            bool redraw=changed || bright!=brightPhase || next.Status!=current.Status || next.LitLamps!=current.LitLamps ||
                 next.HasG!=current.HasG || Math.Round(next.SpeedKmh)!=Math.Round(current.SpeedKmh) ||
                 Math.Round(next.LateralG,2)!=Math.Round(current.LateralG,2) || Math.Round(next.LongitudinalG,2)!=Math.Round(current.LongitudinalG,2) ||
-                Math.Round(next.Rpm)!=Math.Round(current.Rpm) || next.Top!=current.Top || next.Target!=current.Target ||
-                next.NextRpm!=current.NextRpm || next.NextPower!=current.NextPower || next.NextGear!=current.NextGear ||
-                next.Suggested!=current.Suggested || next.SuggestedRpm!=current.SuggestedRpm || next.ForceGain!=current.ForceGain;
+                Math.Round(next.Rpm)!=Math.Round(current.Rpm) || next.Top!=current.Top || next.Suggested!=current.Suggested ||
+                LandingPercent(next)!=LandingPercent(current);
             current=next;
             brightPhase=bright;
             if (redraw) Invalidate();
@@ -198,22 +197,32 @@ namespace HP2ShiftLight
             using (Brush b=new SolidBrush(color)) g.FillRectangle(b,x,y,w,h);
         }
         private static string GearName(int n) { return n<0?"R":n==0?"N":n.ToString(); }
+        internal static int LandingPercent(Reading row)
+        {
+            if (row.Advice==ShiftAdvice.Down && row.SuggestedRpm>0)
+                return (int)Math.Round(100*row.SuggestedPower);
+            if (row.NextGear>0 && row.NextRpm>0)
+                return (int)Math.Round(100*row.NextPower);
+            return -1;
+        }
 
         private void DrawLoad(Graphics g, Color ink, Color secondary)
         {
             const int cx=471,cy=53,r=33;
             using (Pen grid=new Pen(Color.FromArgb(153,149,144),1))
             {
-                g.DrawEllipse(grid,cx-r,cy-r,2*r,2*r);
-                g.DrawEllipse(grid,cx-r/2f,cy-r/2f,r,r);
+                for (int level=1;level<=LoadRange;level++) {
+                    float radius=r*level/(float)LoadRange;
+                    g.DrawEllipse(grid,cx-radius,cy-radius,2*radius,2*radius);
+                }
                 g.DrawLine(grid,cx-r,cy,cx+r,cy);
                 g.DrawLine(grid,cx,cy-r,cx,cy+r);
             }
             if (current.HasG)
             {
-                // 1 g per ring. Clamp only the marker at the outer 2 g ring.
+                // Clip the vector at the rim while keeping both numeric readings intact.
                 double length=Math.Sqrt(current.LateralG*current.LateralG+current.LongitudinalG*current.LongitudinalG);
-                float scale=(float)(r/Math.Max(2,length));
+                float scale=(float)(r/Math.Max(LoadRange,length));
                 float dx=(float)current.LateralG*scale, dy=(float)-current.LongitudinalG*scale;
                 using (Pen stem=new Pen(Amber,2)) g.DrawLine(stem,cx,cy,cx+dx,cy+dy);
                 using (Brush dot=new SolidBrush(Amber)) g.FillEllipse(dot,cx+dx-3.5f,cy+dy-3.5f,7,7);
@@ -222,8 +231,7 @@ namespace HP2ShiftLight
             string x=current.HasG?SignedG(current.LateralG):"—", y=current.HasG?SignedG(current.LongitudinalG):"—";
             TextAt(g,"横向",small,secondary,518,39); TextAt(g,x,label,ink,551,36);
             TextAt(g,"纵向",small,secondary,518,62); TextAt(g,y,label,ink,551,59);
-            TextAt(g,"每圈 1 g",small,secondary,449,87);
-            TextAt(g,"最近 0.5 秒",small,secondary,518,87);
+            TextAt(g,LoadRange+" g",small,secondary,462,87);
         }
         private static string SignedG(double v)
         {
@@ -235,45 +243,41 @@ namespace HP2ShiftLight
             Graphics g=e.Graphics;
             bool up=current.Advice==ShiftAdvice.Up, down=current.Advice==ShiftAdvice.Down;
             bool alert=up || down;
-            Color accent=up?Color.FromArgb(255,100,100):down?Color.FromArgb(93,242,153):current.PreparingUp?Amber:Amber;
-            Color shade=up?(brightPhase?UpLit:UpDim):down?(brightPhase?DownLit:DownDim):Surface;
-            Color secondary=alert?Color.FromArgb(232,239,234):Muted;
-            g.Clear(shade); g.ScaleTransform(zoom,zoom); g.SmoothingMode=SmoothingMode.AntiAlias;
+            Color accent=up?Red:down?Green:Amber;
+            g.Clear(Surface); g.ScaleTransform(zoom,zoom); g.SmoothingMode=SmoothingMode.AntiAlias;
             g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            HudTheme.Frame(g,PanelWidth,PanelHeight,shade,accent);
+            HudTheme.Frame(g,PanelWidth,PanelHeight,Surface,Amber);
             using (Pen line=new Pen(Color.FromArgb(106,104,100),1))
             {
                 foreach (int x in new int[]{119,275,425}) g.DrawLine(line,x,12,x,PanelHeight-12);
             }
             bool live=current.Driving;
-            TextAt(g,"车速",label,secondary,15,11);
+            TextAt(g,"车速",label,Muted,15,11);
             TextAt(g,live?Math.Round(current.SpeedKmh).ToString("0"):"—",speedDigits,Bright,13,24);
-            TextAt(g,"km/h",label,secondary,17,82);
-            TextAt(g,"发动机",label,secondary,132,11);
+            TextAt(g,"km/h",label,Muted,17,82);
+            TextAt(g,"转速",label,Muted,132,11);
             TextAt(g,live?Math.Round(current.Rpm).ToString("0"):"—",digits,Bright,130,30);
-            TextAt(g,"RPM",small,secondary,223,50);
-            double limit=current.Target>0?current.Target:current.Limit;
-            double fraction=live && limit>0?Math.Min(1,current.Rpm/limit):0;
-            for (int i=0;i<16;i++)
-                Box(g,fraction>=(i+1)/16.0?(i>=13?Color.FromArgb(255,104,46):accent):Color.FromArgb(83,82,81),133+i*8,72,6,5);
-            TextAt(g,current.Target>0?"升挡目标  "+Math.Round(current.Target).ToString("0"):"升挡目标  —",small,secondary,132,84);
+            TextAt(g,"RPM",small,Muted,227,50);
+            for (int i=0;i<ShiftState.LampCount;i++) {
+                Color lamp=Unlit;
+                if (up && brightPhase) lamp=Red;
+                if (!up && i<current.LitLamps) lamp=i<4?Green:i<7?Amber:Red;
+                Box(g,lamp,133+i*13,78,11,9);
+            }
 
-            TextAt(g,"当前挡",small,secondary,288,11); TextAt(g,"建议挡",small,secondary,370,11);
+            TextAt(g,"当前挡",small,Muted,288,11); TextAt(g,"建议挡",small,Muted,370,11);
             TextAt(g,live?GearName(current.Gear):"—",digits,Bright,289,26);
-            TextAt(g,"→",gearFont,secondary,329,30);
-            TextAt(g,live && current.Suggested>0?GearName(current.Suggested):"—",digits,accent,375,26);
+            if (alert) TextAt(g,"→",gearFont,accent,329,30);
+            TextAt(g,alert?GearName(current.Suggested):"—",digits,alert?accent:Muted,375,26);
             string status=up?"↑ 升挡":down?"↓ 降挡":current.Status;
-            if (status==null) status=current.PreparingUp?"准备升挡":current.Gear==current.Top?"最高挡":"行驶中";
-            TextAt(g,status,label,alert?Color.White:secondary,288,65);
-            bool lower=live && current.Suggested>0 && current.Suggested<current.Gear;
-            double predicted=lower?current.SuggestedRpm:current.NextRpm;
-            if (predicted>0)
-                TextAt(g,(lower?current.Suggested:current.NextGear)+" 挡 ≈ "+Math.Round(predicted).ToString("0")+" RPM",small,secondary,288,86);
-            if (lower && current.ForceGain>0)
-                TextAt(g,double.IsInfinity(current.ForceGain)?"驱动力恢复":"力 +"+(current.ForceGain*100).ToString("0")+"%",small,secondary,353,67);
-            else if (current.NextPower>0)
-                TextAt(g,"功率 "+(100*current.NextPower).ToString("0")+"%",small,secondary,353,67);
-            DrawLoad(g,Bright,secondary);
+            if (status==null && live && current.Gear==current.Top) status="最高挡";
+            if (status!=null) TextAt(g,status,label,alert?accent:Muted,288,62);
+            if (live) {
+                int power=LandingPercent(current);
+                TextAt(g,"入挡功率",small,Muted,288,86);
+                TextAt(g,power>=0?power+"%":"—",label,Bright,352,83);
+            }
+            DrawLoad(g,Bright,Muted);
         }
 
         protected override void Dispose(bool disposing)
