@@ -8,8 +8,8 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("HP2 ShiftLight")]
-[assembly: System.Reflection.AssemblyVersion("1.7.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.7.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.7.1.0")]
 
 namespace HP2ShiftLight
 {
@@ -80,14 +80,17 @@ namespace HP2ShiftLight
             Bright=HudTheme.White, Amber=HudTheme.Orange;
         private const int PanelWidth=620, PanelHeight=108, LoadRange=3;
         private static readonly Color Red=Color.FromArgb(255,83,67), Green=Color.FromArgb(89,226,141),
+            UpBackground=Color.FromArgb(165,35,40), DownBackground=Color.FromArgb(8,104,58),
             Unlit=Color.FromArgb(77,76,75);
-        private readonly Stopwatch flashClock=new Stopwatch();
-        private bool brightPhase;
+        private readonly Stopwatch signalClock=Stopwatch.StartNew();
+        private long flashStart, gearHighlightUntil;
+        private bool brightPhase, highlightGear;
         private readonly Font label=new Font("Microsoft YaHei UI",13,FontStyle.Bold,GraphicsUnit.Pixel);
         private readonly Font speedDigits=new Font("Bahnschrift",44,FontStyle.Bold|FontStyle.Italic,GraphicsUnit.Pixel);
         private readonly Font small=new Font("Microsoft YaHei UI",11,FontStyle.Regular,GraphicsUnit.Pixel);
         private readonly Font digits=new Font("Bahnschrift",33,FontStyle.Bold,GraphicsUnit.Pixel);
-        private readonly Font gearFont=new Font("Bahnschrift",23,FontStyle.Bold,GraphicsUnit.Pixel);
+        private readonly Font gearFont=new Font("Bahnschrift",40,FontStyle.Bold,GraphicsUnit.Pixel);
+        private readonly Font suggestedFont=new Font("Bahnschrift",48,FontStyle.Bold,GraphicsUnit.Pixel);
         private readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
         private readonly Telemetry telemetry;
         private readonly PursuitPanel pursuit=new PursuitPanel();
@@ -165,16 +168,21 @@ namespace HP2ShiftLight
 
         internal void DisplayReading(Reading next)
         {
+            long now=signalClock.ElapsedMilliseconds;
             bool changed=next.Advice!=current.Advice || next.Car!=current.Car || next.Gear!=current.Gear;
-            if (changed) flashClock.Restart();
-            bool bright=next.Advice==ShiftAdvice.Up && flashClock.ElapsedMilliseconds%360<180;
-            bool redraw=changed || bright!=brightPhase || next.Status!=current.Status || next.LitLamps!=current.LitLamps ||
+            if (changed) flashStart=now;
+            if (!next.Driving || next.Car!=current.Car || next.Gear<=0) gearHighlightUntil=0;
+            else if (next.Gear!=current.Gear) gearHighlightUntil=now+400;
+            bool marked=now<gearHighlightUntil;
+            bool bright=next.Advice==ShiftAdvice.Up && (now-flashStart)%360<180;
+            bool redraw=changed || marked!=highlightGear || bright!=brightPhase || next.Status!=current.Status || next.LitLamps!=current.LitLamps ||
                 next.HasG!=current.HasG || Math.Round(next.SpeedKmh)!=Math.Round(current.SpeedKmh) ||
                 Math.Round(next.LateralG,2)!=Math.Round(current.LateralG,2) || Math.Round(next.LongitudinalG,2)!=Math.Round(current.LongitudinalG,2) ||
                 Math.Round(next.Rpm)!=Math.Round(current.Rpm) || next.Top!=current.Top || next.Suggested!=current.Suggested ||
                 LandingPercent(next)!=LandingPercent(current);
             current=next;
             brightPhase=bright;
+            highlightGear=marked;
             if (redraw) Invalidate();
         }
 
@@ -238,12 +246,38 @@ namespace HP2ShiftLight
             return (Math.Abs(v)<.005?0:v).ToString("+0.00;-0.00;0.00",CultureInfo.InvariantCulture);
         }
 
+        private void DrawGears(Graphics g)
+        {
+            bool up=current.Advice==ShiftAdvice.Up, down=current.Advice==ShiftAdvice.Down;
+            bool alert=up || down;
+            Color ink=alert?Color.White:Muted;
+            if (alert) {
+                Box(g,up?UpBackground:DownBackground,276,3,149,PanelHeight-6);
+                Box(g,up?Red:Green,276,3,3,PanelHeight-6);
+            }
+            TextAt(g,"当前挡",small,ink,288,7);
+            TextAt(g,"建议挡",small,ink,369,7);
+            if (highlightGear) Box(g,Bright,284,23,39,40);
+            TextAt(g,current.Driving?GearName(current.Gear):"—",gearFont,highlightGear?Surface:Bright,289,20);
+            if (alert) {
+                TextAt(g,up?"↑":"↓",digits,Color.White,328,28);
+                TextAt(g,GearName(current.Suggested),suggestedFont,Color.White,370,16);
+            } else TextAt(g,"—",digits,Muted,370,26);
+
+            string status=up?"升挡":down?"降挡":current.Status;
+            if (status==null && current.Driving && current.Gear==current.Top) status="最高挡";
+            if (status!=null) TextAt(g,status,label,ink,288,64);
+            if (current.Driving) {
+                int power=LandingPercent(current);
+                TextAt(g,"入挡功率",small,ink,288,86);
+                TextAt(g,power>=0?power+"%":"—",label,Bright,352,83);
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g=e.Graphics;
-            bool up=current.Advice==ShiftAdvice.Up, down=current.Advice==ShiftAdvice.Down;
-            bool alert=up || down;
-            Color accent=up?Red:down?Green:Amber;
+            bool up=current.Advice==ShiftAdvice.Up;
             g.Clear(Surface); g.ScaleTransform(zoom,zoom); g.SmoothingMode=SmoothingMode.AntiAlias;
             g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             HudTheme.Frame(g,PanelWidth,PanelHeight,Surface,Amber);
@@ -265,18 +299,7 @@ namespace HP2ShiftLight
                 Box(g,lamp,133+i*13,78,11,9);
             }
 
-            TextAt(g,"当前挡",small,Muted,288,11); TextAt(g,"建议挡",small,Muted,370,11);
-            TextAt(g,live?GearName(current.Gear):"—",digits,Bright,289,26);
-            if (alert) TextAt(g,"→",gearFont,accent,329,30);
-            TextAt(g,alert?GearName(current.Suggested):"—",digits,alert?accent:Muted,375,26);
-            string status=up?"↑ 升挡":down?"↓ 降挡":current.Status;
-            if (status==null && live && current.Gear==current.Top) status="最高挡";
-            if (status!=null) TextAt(g,status,label,alert?accent:Muted,288,62);
-            if (live) {
-                int power=LandingPercent(current);
-                TextAt(g,"入挡功率",small,Muted,288,86);
-                TextAt(g,power>=0?power+"%":"—",label,Bright,352,83);
-            }
+            DrawGears(g);
             DrawLoad(g,Bright,Muted);
         }
 
@@ -284,7 +307,7 @@ namespace HP2ShiftLight
         {
             if (disposing && !IsDisposed) {
                 timer.Stop(); timer.Dispose(); telemetry.Dispose(); pursuit.Dispose();
-                label.Dispose(); digits.Dispose(); gearFont.Dispose(); speedDigits.Dispose(); small.Dispose();
+                label.Dispose(); digits.Dispose(); gearFont.Dispose(); suggestedFont.Dispose(); speedDigits.Dispose(); small.Dispose();
             }
             base.Dispose(disposing);
         }
