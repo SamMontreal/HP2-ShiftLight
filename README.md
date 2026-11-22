@@ -1,5 +1,11 @@
 # HP2 ShiftLight
 
+[下载换挡仪表和体积云自动更新包 / Download both mods with automatic updates](https://github.com/SamMontreal/HP2-Timelapse-Clouds/archive/refs/heads/auto-update.zip)
+
+完整解压后双击 `HP2-UpdateAndPlay.exe`，首次选择游戏目录。以后从游戏目录运行同名程序即可自动更新并启动。
+
+Extract the bundle and open `HP2-UpdateAndPlay.exe`. On first use, select the HP2 0.14 game directory. Subsequent launches from that directory check both mods and start the game.
+
 An external tachometer and gear advisor for the PS2 recompilation of Need for Speed: Hot Pursuit 2 on Windows x64. Supports the stock 0.14 runtime and the Timelapse Clouds runtime. The overlay shows road speed, RPM, ten shift LEDs, current and suggested gears, and lateral and longitudinal G.
 
 [Download for Windows](https://raw.githubusercontent.com/SamMontreal/HP2-ShiftLight/windows-v1.7.1/HP2-ShiftLight-v1.7.1-Windows-x64.zip) · [中文使用说明](README.zh-CN.txt)
