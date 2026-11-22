@@ -8,15 +8,56 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("HP2 ShiftLight")]
-[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.1.0")]
 
 namespace HP2ShiftLight
 {
-    internal sealed class Gauge : Form
+    // A layered window with WS_EX_TRANSPARENT passes mouse input through to
+    // the game, including when the two windows live on different UI threads.
+    internal class RaceOverlay : Form
     {
-        [DllImport("user32")] private static extern bool ReleaseCapture();
-        [DllImport("user32")] private static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
+        private const int WS_EX_TRANSPARENT=0x20, WS_EX_TOOLWINDOW=0x80,
+            WS_EX_LAYERED=0x80000, WS_EX_NOACTIVATE=0x08000000;
+
+        protected RaceOverlay()
+        {
+            FormBorderStyle=FormBorderStyle.None; StartPosition=FormStartPosition.Manual;
+            AutoScaleMode=AutoScaleMode.None; ShowInTaskbar=false; DoubleBuffered=true;
+        }
+
+        [DllImport("user32")]
+        private static extern bool SetWindowPos(IntPtr window,IntPtr order,int x,int y,int cx,int cy,uint flags);
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // Form.SetVisibleCore explicitly requests keyboard focus when TopMost
+            // is true. Set the native z-order without activating the form instead.
+            const uint SWP_NOSIZE=1, SWP_NOMOVE=2, SWP_NOACTIVATE=0x10;
+            SetWindowPos(Handle,new IntPtr(-1),0,0,0,0,SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE);
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams
+        {
+            get {
+                var p=base.CreateParams;
+                p.ExStyle|=WS_EX_NOACTIVATE|WS_EX_TRANSPARENT|WS_EX_LAYERED|WS_EX_TOOLWINDOW;
+                return p;
+            }
+        }
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_MOUSEACTIVATE=0x21, MA_NOACTIVATE=3;
+            if (m.Msg==WM_MOUSEACTIVATE) { m.Result=(IntPtr)MA_NOACTIVATE; return; }
+            base.WndProc(ref m);
+        }
+    }
+
+    internal sealed class Gauge : RaceOverlay
+    {
+        [DllImport("user32")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32")] private static extern bool IsIconic(IntPtr window);
         [DllImport("user32")] private static extern bool SetProcessDPIAware();
         [DllImport("user32")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
         [DllImport("user32")] private static extern IntPtr MonitorFromWindow(IntPtr window, uint fallback);
@@ -57,17 +98,12 @@ namespace HP2ShiftLight
         private bool reserveSide;
         private float zoom=1f;
         private Reading current;
-        private static readonly Rectangle CloseBox=new Rectangle(PanelWidth-26,3,22,23);
+        private IntPtr gameWindow;
 
         public Gauge(string dir)
         {
             telemetry=new Telemetry(dir);
-            Text="HP2 驾驶仪表"; AutoScaleMode=AutoScaleMode.None;
-            FormBorderStyle=FormBorderStyle.None; StartPosition=FormStartPosition.Manual;
-            BackColor=Surface; DoubleBuffered=true; TopMost=true;
-            Opacity=0.88;
-            current=telemetry.Poll();
-            PlaceOnGameScreen();
+            Text="HP2 驾驶仪表"; BackColor=Surface; Opacity=0.88;
             timer.Interval=30; timer.Tick+=UpdateGauge; timer.Start();
         }
 
@@ -94,10 +130,9 @@ namespace HP2ShiftLight
             return new Rectangle(area.Left+(area.Width-width)/2,area.Bottom-height-(int)Math.Round(16*scale),width,height);
         }
 
-        private void PlaceOnGameScreen()
+        private void PlaceOnGameScreen(IntPtr game)
         {
-            IntPtr game=telemetry.GameWindow;
-            IntPtr monitor=MonitorFromWindow(game,game==IntPtr.Zero?1u:2u);
+            IntPtr monitor=MonitorFromWindow(game,2u);
             MonitorInfo info=new MonitorInfo { Size=Marshal.SizeOf(typeof(MonitorInfo)) };
             if (!GetMonitorInfo(monitor,ref info)) return;
             uint dpi=96, x, y;
@@ -119,12 +154,19 @@ namespace HP2ShiftLight
         private void UpdateGauge(object sender, EventArgs e)
         {
             Reading next=telemetry.Poll();
-            if (telemetry.GameEnded) { Close(); return; }
-            if (displayCheck.ElapsedMilliseconds>=600 || reserveSide!=next.Air.Visible) {
+            if (telemetry.GameEnded) { Application.ExitThread(); return; }
+            if (next.InRace && (gameWindow==IntPtr.Zero || displayCheck.ElapsedMilliseconds>=600 || reserveSide!=next.Air.Visible)) {
+                gameWindow=telemetry.GameWindow;
                 reserveSide=next.Air.Visible;
-                PlaceOnGameScreen();
+                if (gameWindow!=IntPtr.Zero) PlaceOnGameScreen(gameWindow);
+            }
+            if (!next.InRace || gameWindow==IntPtr.Zero || gameWindow!=GetForegroundWindow() || IsIconic(gameWindow)) {
+                if (pursuit.Visible) pursuit.Hide();
+                if (Visible) Hide();
+                return;
             }
             DisplayReading(next);
+            if (!Visible) Show();
             pursuit.UpdateFor(this,next.Air,zoom,gameArea);
         }
 
@@ -152,20 +194,6 @@ namespace HP2ShiftLight
             using (GraphicsPath path=HudTheme.Outline(0,0,ClientSize.Width,ClientSize.Height,8*zoom))
                 Region=new Region(path);
             if (old!=null) old.Dispose();
-        }
-
-        protected override bool ShowWithoutActivation { get { return true; } }
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg==0x21) { m.Result=(IntPtr)3; return; }   // MA_NOACTIVATE
-            base.WndProc(ref m);
-        }
-        protected override void OnMouseDown(MouseEventArgs e)
-        {
-            base.OnMouseDown(e);
-            if (e.Button!=MouseButtons.Left) return;
-            if (CloseBox.Contains((int)(e.X/zoom),(int)(e.Y/zoom))) { Close(); return; }
-            ReleaseCapture(); SendMessage(Handle,0xa1,(IntPtr)2,IntPtr.Zero);
         }
 
         private static void TextAt(Graphics g,string text,Font font,Color color,int x,int y)
@@ -253,18 +281,15 @@ namespace HP2ShiftLight
             else if (current.NextPower>0)
                 TextAt(g,"功率 "+(100*current.NextPower).ToString("0")+"%",small,secondary,353,67);
             DrawLoad(g,Bright,secondary);
-            using (Pen pen=new Pen(secondary,1.4f))
-            {
-                int x=CloseBox.X+7,y=CloseBox.Y+7;
-                g.DrawLine(pen,x,y,x+7,y+7); g.DrawLine(pen,x+7,y,x,y+7);
-            }
         }
 
-        protected override void OnFormClosed(FormClosedEventArgs e)
+        protected override void Dispose(bool disposing)
         {
-            timer.Stop(); timer.Dispose(); telemetry.Dispose();
-            pursuit.Dispose(); label.Dispose(); digits.Dispose(); gearFont.Dispose(); speedDigits.Dispose(); small.Dispose();
-            base.OnFormClosed(e);
+            if (disposing && !IsDisposed) {
+                timer.Stop(); timer.Dispose(); telemetry.Dispose(); pursuit.Dispose();
+                label.Dispose(); digits.Dispose(); gearFont.Dispose(); speedDigits.Dispose(); small.Dispose();
+            }
+            base.Dispose(disposing);
         }
         internal static void EnableMonitorDpi()
         {
@@ -281,7 +306,9 @@ namespace HP2ShiftLight
                 if (!first) return;
                 EnableMonitorDpi();
                 Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new Gauge(AppDomain.CurrentDomain.BaseDirectory));
+                // The loop keeps polling while the game loads or returns to the menu.
+                // Passing the form to Application.Run would show it immediately.
+                using (var gauge=new Gauge(AppDomain.CurrentDomain.BaseDirectory)) Application.Run();
             }
         }
     }

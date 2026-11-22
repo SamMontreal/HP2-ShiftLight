@@ -21,7 +21,9 @@ namespace HP2ShiftLight
         public double Target, NextRpm, NextPower, Limit, SuggestedRpm, SuggestedPower, CurrentPower, ForceGain;
         public ShiftAdvice Advice;
         public bool PreparingUp;
+        public bool OnStartingGrid;
         public bool Driving { get { return Car != 0; } }
+        public bool InRace { get { return OnStartingGrid || Driving; } }
     }
 
     internal static class Power
@@ -376,7 +378,7 @@ namespace HP2ShiftLight
         private SafeProcessHandle handle;
         private Process process, session;
         public bool GameEnded { get { return session!=null && session.HasExited; } }
-        private long ram, retry, tickTime;
+        private long ram, retry, tickTime, replayUntil;
         private int lastTick, lastCar;
         private Reading lastReading;
         private readonly byte[] gearbox = new byte[16];
@@ -396,6 +398,22 @@ namespace HP2ShiftLight
             return new Reading { Status = why };
         }
 
+        // HP2 can leave the driver in racing mode while its results list covers the car.
+        // Follow the active screen list used by the runtime's menu_on_screen().
+        private bool RaceMenuOpen()
+        {
+            int list=Int(0x3305a4);
+            if (!IsGuestPointer(list)) return false;
+            int node=Int(list+412);
+            if (!IsGuestPointer(node)) return false;
+            int head=node+8, screen=Int(head);
+            if (screen==head || !IsGuestPointer(screen)) return false;
+            int menu=Int(screen+8);
+            if (!IsGuestPointer(menu)) return false;
+            int item=Int(menu);
+            return item!=menu && IsGuestPointer(item);
+        }
+
         public Reading Poll()
         {
             try
@@ -406,16 +424,26 @@ namespace HP2ShiftLight
                     if (clock.ElapsedMilliseconds >= retry) Attach();
                     if (process == null) return Idle(waiting);
                 }
-                if (Int(0x330544) != 6) return Idle("已连接 · 等待比赛");
+                if (Int(0x330544) != 6) { replayUntil=0; return Idle("已连接 · 等待比赛"); }
                 int p = Int(0x330728);    // Player::Players[0], even in two-player races
                 if (!IsGuestPointer(p)) return Idle("等待玩家车辆");
                 int mode = Int(p + 196);
                 int replay = Int(0x330148);
                 if (mode == 1 || (IsGuestPointer(replay) && Int(replay+16) != 0)) return Idle("暂停");
-                if (mode == 4 || mode == 7 || (IsGuestPointer(replay) && Int(replay) != 0)) return Idle("回放");
+                // The replay manager can clear its playback bit between displayed frames.
+                if (mode==4 || mode==7 || (IsGuestPointer(replay) && Int(replay)!=0))
+                    replayUntil=clock.ElapsedMilliseconds+250;
+                if (clock.ElapsedMilliseconds<replayUntil) return Idle("回放");
+                if ((mode==2 || mode==5) && RaceMenuOpen()) return Idle("赛事菜单");
                 if (mode != 2) {
                     var waitingRow=Idle(mode == 5 ? "等待发车" : "等待驾驶");
-                    if (mode==5) waitingRow.Air=Pursuit.Read(readWord,Int(p+4));
+                    if (mode==5) {
+                        int gridCar=Int(p+4);
+                        if (IsGuestPointer(gridCar)) {
+                            waitingRow.OnStartingGrid=true;
+                            waitingRow.Air=Pursuit.Read(readWord,gridCar);
+                        }
+                    }
                     return waitingRow;
                 }
                 int car = Int(p+4);

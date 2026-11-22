@@ -86,7 +86,7 @@ namespace HP2ShiftLight
         }
     }
 
-    internal sealed class PursuitPanel : Form
+    internal sealed class PursuitPanel : RaceOverlay
     {
         internal const int DesignWidth=248, Gap=6;
         private const int H=72;
@@ -96,12 +96,8 @@ namespace HP2ShiftLight
         private float scale=1;
         internal PursuitPanel()
         {
-            Text="HP2 空中预警"; FormBorderStyle=FormBorderStyle.None; AutoScaleMode=AutoScaleMode.None;
-            StartPosition=FormStartPosition.Manual; ShowInTaskbar=false; TopMost=true; DoubleBuffered=true;
-            BackColor=HudTheme.Base; Opacity=.90;
+            Text="HP2 空中预警"; BackColor=HudTheme.Base; Opacity=.90;
         }
-        protected override bool ShowWithoutActivation { get { return true; } }
-        protected override CreateParams CreateParams { get { var p=base.CreateParams; p.ExStyle|=0x08000000; return p; } }
         internal static Rectangle SideBounds(Rectangle main,Rectangle view,float zoom,out float scale)
         {
             int gap=Math.Max(1,(int)Math.Round(Gap*zoom));
